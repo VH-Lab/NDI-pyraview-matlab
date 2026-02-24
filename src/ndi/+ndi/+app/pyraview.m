@@ -4,9 +4,9 @@ function pyraview(app_options)
 %   ndi.app.pyraview('session', session_obj)
 %
     arguments
-        app_options.session (1,1) ndi.session = ndi.session.empty()
+        app_options.session (1,:) ndi.session = ndi.session.empty()
         app_options.command (1,:) char = 'Initialize'
-        app_options.fig (1,1) matlab.ui.Figure = matlab.ui.Figure.empty()
+        app_options.fig = []
     end
 
     session = app_options.session;
