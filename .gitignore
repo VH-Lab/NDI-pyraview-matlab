@@ -1,0 +1,22 @@
+# Ignore Mac DS_Store files and other known temporary files
+.DS_Store
+.ndi
+*.ndi
+*.tmp
+*.swp
+*.asv
+*.m~
+__pycache__
+src/ndi/docs/NDI-matlab/documents/
+site/
+releases/
+mkdocs.yml
+docs/NDI-matlab/reference/
+docs/reports/
+docs/NDI-matlab/mkdocs-references.yml
+docs/documentation_structure.mat
+src/ndi/docs/documentation_structure.mat
+src/ndi/docs/NDI-matlab/documents/
+src/ndi/docs/NDI-matlab/mkdocs-references.yml
+src/ndi/docs/NDI-matlab/reference/
+src/ndi/docs/reports/
