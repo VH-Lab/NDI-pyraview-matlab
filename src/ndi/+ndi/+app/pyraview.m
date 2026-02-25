@@ -54,7 +54,7 @@ function pyraview(app_options)
         ud.view_t0 = 0; % Start of current view
         ud.view_duration = 1; % Duration of current view
         ud.channel_y_spacing = 100; % Default spacing
-        ud.spiking_elements = {}; % Store spiking element objects
+        ud.spiking_info = struct('element_obj', {}, 'neuron_doc', {}, 'label', {}); % Store spiking info
         ud.first_plot = true; % Flag for first plot
 
         % Create Controls (Positions will be set by ResizeFcn)
@@ -377,24 +377,41 @@ function load_spiking_neurons(fig)
 
     docs = session.database_search(Q);
 
-    elements = {};
-    ids = {};
+    spiking_info = struct('element_obj', {}, 'neuron_doc', {}, 'label', {});
+
     for i=1:numel(docs)
-        elements{end+1} = ndi.database.fun.ndi_document2ndi_object(docs{i}, session);
-        ids{end+1} = docs{i}.id();
+        el_obj = ndi.database.fun.ndi_document2ndi_object(docs{i}, session);
+
+        % Find neuron document
+        Q_n = ndi.query('','isa','neuron_extracellular') & ...
+              ndi.query('','depends_on','element_id', docs{i}.id());
+        n_docs = session.database_search(Q_n);
+
+        quality = 0;
+        n_doc = [];
+        if ~isempty(n_docs)
+            n_doc = n_docs{1};
+            if isfield(n_doc.document_properties, 'neuron_extracellular') && ...
+               isfield(n_doc.document_properties.neuron_extracellular, 'quality')
+               quality = n_doc.document_properties.neuron_extracellular.quality;
+            end
+        end
+
+        label = sprintf('%d %s Q%d', i, el_obj.elementstring(), quality);
+
+        spiking_info(i).element_obj = el_obj;
+        spiking_info(i).neuron_doc = n_doc;
+        spiking_info(i).label = label;
     end
 
-    ud.spiking_elements = elements;
+    ud.spiking_info = spiking_info;
     set(fig, 'UserData', ud);
 
-    strs = {};
-    if ~isempty(elements)
-        strs = cellfun(@(x) x.elementstring(), elements, 'UniformOutput', false);
-    end
+    strs = {spiking_info.label};
 
     lb = findobj(fig, 'Tag', 'SpikingList');
-    set(lb, 'String', strs, 'UserData', ids); % Store IDs
-    set(lb, 'Max', max(2, numel(strs))); % Allow multiple selection (Max > 1)
+    set(lb, 'String', strs);
+    set(lb, 'Max', max(2, numel(strs))); % Allow multiple selection
     if ~isempty(strs)
         set(lb, 'Value', 1:numel(strs));
     else
@@ -409,38 +426,31 @@ function update_spiking_plot(fig)
     lb = findobj(fig, 'Tag', 'SpikingList');
 
     selectedIdx = get(lb, 'Value');
-    allIDs = get(lb, 'UserData');
+    spiking_info = ud.spiking_info;
 
     sax = ud.spiking_axes;
     cla(sax);
 
-    if isempty(selectedIdx) || isempty(allIDs)
+    if isempty(selectedIdx) || isempty(spiking_info)
         return;
     end
 
-    session = ud.session;
     spacing = ud.channel_y_spacing;
 
     % Prepare plotting arrays
     X = [];
     Y = [];
+    text_labels = struct('x', {}, 'y_top', {}, 'y_bot', {}, 'str', {});
 
     % Loop through selected
     for k = 1:numel(selectedIdx)
         idx = selectedIdx(k);
-        if idx > numel(allIDs), continue; end
+        if idx > numel(spiking_info), continue; end
 
-        spikingElementID = allIDs{idx};
+        info = spiking_info(idx);
+        doc = info.neuron_doc;
 
-        Q1 = ndi.query('','isa','neuron_extracellular');
-        Q2 = ndi.query('','depends_on','element_id', spikingElementID);
-
-        docs = session.database_search(Q1 & Q2);
-
-        if isempty(docs), continue; end
-        doc = docs{1};
-
-        if ~isfield(doc.document_properties, 'neuron_extracellular') || ...
+        if isempty(doc) || ~isfield(doc.document_properties, 'neuron_extracellular') || ...
            ~isfield(doc.document_properties.neuron_extracellular, 'mean_waveform')
             continue;
         end
@@ -468,19 +478,21 @@ function update_spiking_plot(fig)
         end
 
         % Labels
-        txtStr = 'Unknown';
-        % Try to find element string again or pass it?
-        % We can get it from listbox string
-        strs = get(lb, 'String');
-        if idx <= numel(strs)
-            txtStr = strs{idx};
-        end
-
-        text(sax, k-0.5, (numChannels+0.5)*spacing, txtStr, 'HorizontalAlignment', 'center');
-        text(sax, k-0.5, -0.5*spacing, txtStr, 'HorizontalAlignment', 'center');
+        label_idx = num2str(idx);
+        text_labels(end+1).x = k-0.5;
+        text_labels(end).y_top = (numChannels+0.5)*spacing;
+        text_labels(end).y_bot = -0.5*spacing;
+        text_labels(end).str = label_idx;
     end
 
     plot(sax, X, Y, 'k');
+    hold(sax, 'on');
+    for t = 1:numel(text_labels)
+        text(sax, text_labels(t).x, text_labels(t).y_top, text_labels(t).str, 'HorizontalAlignment', 'center');
+        text(sax, text_labels(t).x, text_labels(t).y_bot, text_labels(t).str, 'HorizontalAlignment', 'center');
+    end
+    hold(sax, 'off');
+
     xlim(sax, [0, numel(selectedIdx)]);
 end
 
