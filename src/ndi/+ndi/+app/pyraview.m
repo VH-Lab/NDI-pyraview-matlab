@@ -46,8 +46,12 @@ function pyraview(app_options)
         ud.epoch_t1 = 0;
         ud.current_data_t0 = -Inf; % Start of currently loaded data buffer
         ud.current_data_t1 = -Inf; % End of currently loaded data buffer
+        ud.current_data = []; % Store loaded data
+        ud.current_time = []; % Store loaded time
+        ud.current_level = []; % Store loaded level
         ud.view_t0 = 0; % Start of current view
         ud.view_duration = 1; % Duration of current view
+        ud.channel_y_spacing = 100; % Default spacing
 
         % Create Controls (Positions will be set by ResizeFcn)
 
@@ -88,6 +92,15 @@ function pyraview(app_options)
         uicontrol(fig, 'Style', 'popupmenu', 'String', {'low', 'high'}, ...
              'Units', 'pixels', 'Position', [10 10 80 20], ...
              'Tag', 'BandMenu', 'Callback', callbackstr, 'Value', 2); % Default high
+
+        % Edit: Channel Spacing
+        uicontrol(fig, 'Style', 'text', 'String', 'Spacing:', ...
+             'Units', 'pixels', 'Position', [10 10 60 20], ...
+             'HorizontalAlignment', 'left', 'Tag', 'SpacingText');
+
+        uicontrol(fig, 'Style', 'edit', 'String', '100', ...
+             'Units', 'pixels', 'Position', [10 10 50 20], ...
+             'Tag', 'SpacingEdit', 'Callback', callbackstr);
 
         % Separator Line (using uipanel as line)
         uipanel(fig, 'Units', 'pixels', 'Position', [0 0 100 1], 'Tag', 'SeparatorLine', ...
@@ -142,6 +155,8 @@ function pyraview(app_options)
                 check_and_load(fig);
             case 'BandMenu'
                 check_and_load(fig);
+            case 'SpacingEdit'
+                update_spacing(fig);
             case 'Scroll1' % Zoom
                 update_from_scrollbars(fig, ud);
             case 'Scroll2' % Pan
@@ -292,6 +307,20 @@ function check_and_load(fig)
     update_view(fig);
 end
 
+function update_spacing(fig)
+    ud = get(fig, 'UserData');
+    se = findobj(fig, 'Tag', 'SpacingEdit');
+    str = get(se, 'String');
+    val = str2double(str);
+    if isnan(val)
+        val = 100; % Default fallback
+        set(se, 'String', '100');
+    end
+    ud.channel_y_spacing = val;
+    set(fig, 'UserData', ud);
+    plot_data(fig); % Re-plot without reloading data
+end
+
 function update_from_scrollbars(fig, ud)
     % Read scrollbar values and update view_t0 / view_duration
 
@@ -380,17 +409,8 @@ function update_view(fig)
     end
 
     % Determine if we need to load new data
-    % Check if current view is inside current data buffer with some margin?
-    % The prompt says: "only call getData when the real viewing axis (let's say t0 or t1) gets to the edge."
-    % This implies we maintain a buffer slightly larger than the view.
-    % getData itself implements `readExcess` for raw data, but here we manage the "viewport buffer".
-
     req_t0 = ud.view_t0;
     req_t1 = req_t0 + ud.view_duration;
-
-    % Check bounds against loaded data
-    % We assume loaded data is [ud.current_data_t0, ud.current_data_t1]
-    % If req_t0 < current_data_t0 OR req_t1 > current_data_t1, we are at or beyond the edge.
 
     needs_load = false;
 
@@ -398,52 +418,116 @@ function update_view(fig)
         needs_load = true;
     end
 
-    % If we are zoomed out significantly, we might need a different decimation level.
-    % getData handles decimation based on pixelSpan.
-    % If pixelSpan changes (resize) or duration changes (zoom), getData might return different level.
-    % So we should probably reload if zoom level changes significantly too?
-    % For now, let's stick to the "edge" logic for panning, but zooming naturally changes t1/t0 limits.
-
-    % Also, if we zoom out, we might need MORE data than loaded.
-
     if needs_load
-        % Calculate buffer to load
-        % Load view +/- 1 screen width? Or just the view?
-        % Prompt: "return data from t0-delta to t1+delta, where delta is (t1-t0)"
-        % getData does this internal expansion based on inputs T0, T1.
-        % So we pass the VIEW coordinates to getData, and it returns expanded data.
-        % So we should update current_data_t0/t1 to reflect what getData returns.
-
         probe_idx = get(findobj(fig, 'Tag', 'ProbeMenu'), 'Value');
         probe = ud.probes{probe_idx};
 
-        % Get pixel width of axes
         ax_pos = getpixelposition(ud.axes);
         pixelSpan = ax_pos(3);
 
-        [tVec, data] = ndi.app.pyraview.getData(probe, ud.current_doc, req_t0, req_t1, pixelSpan);
+        [tVec, data, level] = ndi.app.pyraview.getData(probe, ud.current_doc, req_t0, req_t1, pixelSpan);
 
         if ~isempty(tVec)
             ud.current_data_t0 = tVec(1);
             ud.current_data_t1 = tVec(end);
+            ud.current_data = data;
+            ud.current_time = tVec;
+            ud.current_level = level;
 
-            % Plot data
-            plot(ud.axes, tVec, data);
-
-            % Restore limits because plot resets them
-            xlim(ud.axes, [req_t0, req_t1]);
-
-            ud.last_plot_data = data; % Optional caching if needed
-            ud.last_plot_time = tVec;
+            set(fig, 'UserData', ud);
+            plot_data(fig);
         else
             cla(ud.axes);
         end
-
-        set(fig, 'UserData', ud);
     else
-        % Data is already loaded, just update limits
+        % No data load needed, but limits might need update
         xlim(ud.axes, [req_t0, req_t1]);
     end
+end
+
+function plot_data(fig)
+    ud = get(fig, 'UserData');
+
+    data = ud.current_data;
+    tVec = ud.current_time;
+    level = ud.current_level;
+    spacing = ud.channel_y_spacing;
+
+    if isempty(data)
+        cla(ud.axes);
+        return;
+    end
+
+    numSamples = size(data, 1);
+    numChannels = size(data, 2);
+
+    if level == 0
+        % Raw Data: Samples x Channels
+        % Construct single X and Y vectors
+        % Y: data(:,c) + (c-1)*spacing
+        % Separate channels with NaN
+
+        % Preallocate is simpler if we just loop to fill
+        % Total points: numSamples per channel + 1 NaN per channel (except last maybe, but consistent is fine)
+        totalPoints = numChannels * (numSamples + 1);
+
+        X = NaN(totalPoints, 1);
+        Y = NaN(totalPoints, 1);
+
+        for c = 1:numChannels
+            offset = (c-1) * spacing;
+
+            startIdx = (c-1) * (numSamples + 1) + 1;
+            endIdx = startIdx + numSamples - 1;
+
+            X(startIdx:endIdx) = tVec;
+            Y(startIdx:endIdx) = data(:, c) + offset;
+
+            % The next point (endIdx+1) is already NaN by initialization
+        end
+
+        plot(ud.axes, X, Y);
+
+    else
+        % Decimated Data: Samples x Channels x 2
+        % Construct single X and Y vectors for vertical bars
+        % For each sample i, channel c: (t(i), min), (t(i), max), (NaN, NaN)
+        % This creates 3 points per sample per channel.
+
+        pointsPerSample = 3;
+        totalPoints = numSamples * pointsPerSample * numChannels;
+
+        X = NaN(totalPoints, 1);
+        Y = NaN(totalPoints, 1);
+
+        for c = 1:numChannels
+            offset = (c-1) * spacing;
+
+            % Vectorized construction for channel c
+            mins = data(:, c, 1) + offset;
+            maxs = data(:, c, 2) + offset;
+
+            % We want sequence: min, max, nan
+            % Create [3 x N] matrix
+            tempY = [mins'; maxs'; nan(1, numSamples)];
+            tempX = [tVec'; tVec'; nan(1, numSamples)];
+
+            % Flatten to column
+            colY = tempY(:);
+            colX = tempX(:);
+
+            startIdx = (c-1) * numel(colY) + 1;
+            endIdx = startIdx + numel(colY) - 1;
+
+            X(startIdx:endIdx) = colX;
+            Y(startIdx:endIdx) = colY;
+        end
+
+        plot(ud.axes, X, Y);
+    end
+
+    % Restore limits
+    xlim(ud.axes, [ud.view_t0, ud.view_t0 + ud.view_duration]);
 end
 
 function on_resize(fig)
@@ -478,6 +562,14 @@ function on_resize(fig)
 
     bm = findobj(fig, 'Tag', 'BandMenu');
     set(bm, 'Position', [current_x + 40, top_y, 80, control_height]);
+
+    % Spacing
+    current_x = current_x + 80 + 200 + margin;
+    st = findobj(fig, 'Tag', 'SpacingText');
+    set(st, 'Position', [current_x, top_y, 60, control_height]);
+
+    se = findobj(fig, 'Tag', 'SpacingEdit');
+    set(se, 'Position', [current_x + 60, top_y, 50, control_height]);
 
     % Separator
     sep_y = top_y - margin;

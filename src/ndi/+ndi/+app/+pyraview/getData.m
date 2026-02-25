@@ -1,7 +1,7 @@
-function [tVec, dataOut] = getData(probe, doc, t0, t1, pixelSpan, options)
+function [tVec, dataOut, level] = getData(probe, doc, t0, t1, pixelSpan, options)
 % GETDATA - Retrieve data from a pyraview document using NDI binary doc methods
 %
-%   [TVEC, DATAOUT] = ndi.app.pyraview.getData(PROBE, DOC, T0, T1, PIXELSPAN, ...)
+%   [TVEC, DATAOUT, LEVEL] = ndi.app.pyraview.getData(PROBE, DOC, T0, T1, PIXELSPAN, ...)
 %
 %   Inputs:
 %       PROBE     - An ndi.probe object.
@@ -15,7 +15,8 @@ function [tVec, dataOut] = getData(probe, doc, t0, t1, pixelSpan, options)
 %
 %   Outputs:
 %       TVEC      - Time vector of the retrieved data.
-%       DATAOUT   - Data matrix (Samples x Channels).
+%       DATAOUT   - Data matrix (Samples x Channels) or (Samples x Channels x 2).
+%       LEVEL     - The decimation level used (0 for raw, >0 for decimated).
 %
 
     arguments
