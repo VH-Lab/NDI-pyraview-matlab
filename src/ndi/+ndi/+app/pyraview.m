@@ -56,6 +56,8 @@ function pyraview(app_options)
         ud.channel_y_spacing = 100; % Default spacing
         ud.spiking_info = struct('element_obj', {}, 'neuron_doc', {}, 'label', {}); % Store spiking info
         ud.first_plot = true; % Flag for first plot
+        ud.split_position = 0.8; % Default split position (80% for Main)
+        ud.dragging = false;
 
         % Create Controls (Positions will be set by ResizeFcn)
 
@@ -137,6 +139,14 @@ function pyraview(app_options)
         % Spiking Units Frame
         sf = uipanel(fig, 'Title', '', 'Units', 'pixels', ...
              'Position', [10 10 100 100], 'Tag', 'SpikingFrame', 'Visible', 'off');
+
+        % Split Dragger (uicontrol, visible only when Spiking is on)
+        % Using 'text' style for simple bar, or 'pushbutton'
+        uicontrol(fig, 'Style', 'text', 'String', '', ...
+             'Units', 'pixels', 'Position', [0 0 5 100], ...
+             'Tag', 'SplitDragger', 'BackgroundColor', [0.8 0.8 0.8], ...
+             'Enable', 'inactive', 'ButtonDownFcn', @(src,ev) start_drag(src,ev), ...
+             'Visible', 'off');
 
         % Spiking Axes
         sax = axes('Parent', sf, 'Units', 'normalized', ...
@@ -238,6 +248,42 @@ function pyraview(app_options)
                 zoom(fig, 'on'); pan(fig, 'off');
         end
     end
+end
+
+function start_drag(src, ~)
+    fig = ancestor(src, 'figure');
+    ud = get(fig, 'UserData');
+    ud.dragging = true;
+    set(fig, 'UserData', ud);
+    set(fig, 'WindowButtonMotionFcn', @(s,e) drag_split(s,e));
+    set(fig, 'WindowButtonUpFcn', @(s,e) stop_drag(s,e));
+end
+
+function drag_split(fig, ~)
+    ud = get(fig, 'UserData');
+    if ~ud.dragging, return; end
+
+    pos = get(fig, 'CurrentPoint');
+    fig_pos = get(fig, 'Position');
+    width = fig_pos(3);
+
+    % Calculate ratio (CurrentPoint is relative to bottom-left)
+    ratio = pos(1) / width;
+
+    % Clamp
+    ratio = max(0.2, min(0.9, ratio));
+
+    ud.split_position = ratio;
+    set(fig, 'UserData', ud);
+    on_resize(fig);
+end
+
+function stop_drag(fig, ~)
+    ud = get(fig, 'UserData');
+    ud.dragging = false;
+    set(fig, 'UserData', ud);
+    set(fig, 'WindowButtonMotionFcn', '');
+    set(fig, 'WindowButtonUpFcn', '');
 end
 
 function update_epoch_list(fig, ud)
@@ -723,19 +769,26 @@ function on_resize(fig)
 
     % Check Spiking Checkbox
     show_spiking = get(sc, 'Value');
+    ud = get(fig, 'UserData');
+    split = ud.split_position;
 
     mf = findobj(fig, 'Tag', 'MainFrame');
     sf = findobj(fig, 'Tag', 'SpikingFrame');
+    sd = findobj(fig, 'Tag', 'SplitDragger');
 
     if show_spiking
-        main_w = width * 0.8;
-        spiking_w = width * 0.2;
+        main_w = width * split;
+        spiking_w = width * (1 - split);
+        dragger_w = 5;
+
         set(mf, 'Position', [0, frame_y, main_w, frame_h]);
         set(sf, 'Position', [main_w, frame_y, spiking_w, frame_h], 'Visible', 'on');
+        set(sd, 'Position', [main_w - dragger_w/2, frame_y, dragger_w, frame_h], 'Visible', 'on');
     else
         main_w = width;
         set(mf, 'Position', [0, frame_y, main_w, frame_h]);
         set(sf, 'Visible', 'off');
+        set(sd, 'Visible', 'off');
     end
 
     % Scrollbars inside MainFrame (Normalized)
