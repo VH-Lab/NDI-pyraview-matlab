@@ -55,6 +55,7 @@ function pyraview(app_options)
         ud.view_duration = 1; % Duration of current view
         ud.channel_y_spacing = 100; % Default spacing
         ud.spiking_elements = {}; % Store spiking element objects
+        ud.first_plot = true; % Flag for first plot
 
         % Create Controls (Positions will be set by ResizeFcn)
 
@@ -150,7 +151,7 @@ function pyraview(app_options)
         % Spiking Listbox
         uicontrol(sf, 'Style', 'listbox', 'String', {}, ...
              'Units', 'normalized', 'Position', [0.6 0 0.4 0.9], ...
-             'Tag', 'SpikingList');
+             'Tag', 'SpikingList', 'Callback', callbackstr);
 
         % Link Y Axes
         linkaxes([ax, sax], 'y');
@@ -213,6 +214,8 @@ function pyraview(app_options)
                 if val
                     load_spiking_neurons(fig);
                 end
+            case 'SpikingList'
+                update_spiking_plot(fig);
             case 'Scroll1' % Pan
                 update_from_scrollbars(fig, ud);
             case 'Scroll2' % Zoom
@@ -343,6 +346,7 @@ function check_and_load(fig)
     ud.current_data_t1 = -Inf;
     ud.loaded_pixel_span = 0;
     ud.loaded_view_duration = Inf;
+    ud.first_plot = true; % Reset Y-axis scale on new data
 
     set(fig, 'UserData', ud);
 
@@ -374,8 +378,10 @@ function load_spiking_neurons(fig)
     docs = session.database_search(Q);
 
     elements = {};
+    ids = {};
     for i=1:numel(docs)
         elements{end+1} = ndi.database.fun.ndi_document2ndi_object(docs{i}, session);
+        ids{end+1} = docs{i}.id();
     end
 
     ud.spiking_elements = elements;
@@ -387,13 +393,95 @@ function load_spiking_neurons(fig)
     end
 
     lb = findobj(fig, 'Tag', 'SpikingList');
-    set(lb, 'String', strs);
+    set(lb, 'String', strs, 'UserData', ids); % Store IDs
     set(lb, 'Max', max(2, numel(strs))); % Allow multiple selection (Max > 1)
     if ~isempty(strs)
         set(lb, 'Value', 1:numel(strs));
     else
         set(lb, 'Value', []);
     end
+
+    update_spiking_plot(fig);
+end
+
+function update_spiking_plot(fig)
+    ud = get(fig, 'UserData');
+    lb = findobj(fig, 'Tag', 'SpikingList');
+
+    selectedIdx = get(lb, 'Value');
+    allIDs = get(lb, 'UserData');
+
+    sax = ud.spiking_axes;
+    cla(sax);
+
+    if isempty(selectedIdx) || isempty(allIDs)
+        return;
+    end
+
+    session = ud.session;
+    spacing = ud.channel_y_spacing;
+
+    % Prepare plotting arrays
+    X = [];
+    Y = [];
+
+    % Loop through selected
+    for k = 1:numel(selectedIdx)
+        idx = selectedIdx(k);
+        if idx > numel(allIDs), continue; end
+
+        spikingElementID = allIDs{idx};
+
+        Q1 = ndi.query('','isa','neuron_extracellular');
+        Q2 = ndi.query('','depends_on','element_id', spikingElementID);
+
+        docs = session.database_search(Q1 & Q2);
+
+        if isempty(docs), continue; end
+        doc = docs{1};
+
+        if ~isfield(doc.document_properties, 'neuron_extracellular') || ...
+           ~isfield(doc.document_properties.neuron_extracellular, 'mean_waveform')
+            continue;
+        end
+
+        waveform = doc.document_properties.neuron_extracellular.mean_waveform; % N x C
+        [numSamples, numChannels] = size(waveform);
+
+        % Normalize X to 0..1 for this neuron slot k
+        % k corresponds to x-range [k-1+0.25, k-1+0.75]
+        t = linspace(0.25, 0.75, numSamples)';
+        t_shifted = (k-1) + t;
+
+        % Plot channels stacked
+        for c = 1:numChannels
+            offset = (c-1) * spacing;
+
+            % Insert into X, Y with NaNs
+            if isempty(X)
+                X = t_shifted;
+                Y = waveform(:,c) + offset;
+            else
+                X = [X; NaN; t_shifted];
+                Y = [Y; NaN; waveform(:,c) + offset];
+            end
+        end
+
+        % Labels
+        txtStr = 'Unknown';
+        % Try to find element string again or pass it?
+        % We can get it from listbox string
+        strs = get(lb, 'String');
+        if idx <= numel(strs)
+            txtStr = strs{idx};
+        end
+
+        text(sax, k-0.5, (numChannels+0.5)*spacing, txtStr, 'HorizontalAlignment', 'center');
+        text(sax, k-0.5, -0.5*spacing, txtStr, 'HorizontalAlignment', 'center');
+    end
+
+    plot(sax, X, Y, 'k');
+    xlim(sax, [0, numel(selectedIdx)]);
 end
 
 function update_spacing(fig)
@@ -408,6 +496,11 @@ function update_spacing(fig)
     ud.channel_y_spacing = val;
     set(fig, 'UserData', ud);
     plot_data(fig); % Re-plot without reloading data
+
+    % Update spiking plot if visible
+    if strcmp(get(findobj(fig, 'Tag', 'SpikingFrame'), 'Visible'), 'on')
+        update_spiking_plot(fig);
+    end
 end
 
 function update_from_scrollbars(fig, ud)
@@ -529,12 +622,10 @@ function update_view(fig)
     ax_pos = getpixelposition(ud.axes);
     current_pixel_span = ax_pos(3);
 
-    % If pixel span changed significantly (>10%)
     if abs(current_pixel_span - ud.loaded_pixel_span) / ud.loaded_pixel_span > 0.1
         needs_load = true;
     end
 
-    % If zoom level changed significantly (>20%)
     if ud.view_duration < ud.loaded_view_duration * 0.8
         needs_load = true;
     end
@@ -563,7 +654,6 @@ function update_view(fig)
         xlim(ud.axes, [req_t0, req_t1]);
     end
 
-    % Force scrollbar sync if not called from there?
     update_scrollbars(fig, ud);
 end
 
@@ -578,6 +668,13 @@ function plot_data(fig)
     if isempty(data)
         cla(ud.axes);
         return;
+    end
+
+    % Store previous YLim if not first plot
+    if ~ud.first_plot
+        yl_old = ylim(ud.axes);
+    else
+        yl_old = [];
     end
 
     numSamples = size(data, 1);
@@ -625,7 +722,16 @@ function plot_data(fig)
         plot(ud.axes, X, Y);
     end
 
+    % Restore X limits
     xlim(ud.axes, [ud.view_t0, ud.view_t0 + ud.view_duration]);
+
+    % Restore Y limits if preserved
+    if ~isempty(yl_old)
+        ylim(ud.axes, yl_old);
+    else
+        ud.first_plot = false;
+        set(fig, 'UserData', ud);
+    end
 end
 
 function on_resize(fig)
@@ -674,8 +780,8 @@ function on_resize(fig)
 
     % Frames
     % Main Frame hugs bottom (0) and separator (sep_y)
-    frame_y = 0; % Assuming "hug bottom" means 0
-    frame_h = sep_y; % From 0 to sep_y
+    frame_y = 0;
+    frame_h = sep_y;
 
     % Check Spiking Checkbox
     show_spiking = get(sc, 'Value');
@@ -736,7 +842,32 @@ function on_resize(fig)
     % Axes
     % Starts above buttons
     axes_bottom = 2*sb_h_norm + btn_h_norm;
-    set(ax, 'Position', [0.05, axes_bottom + 0.05, 0.9, 1 - (axes_bottom + 0.05) - 0.02]);
+    % Make sure we handle if buttons are higher than expected?
+    % Buttons are at 2*sb_h_norm, height btn_h_norm. Top is at 2*sb_h + btn_h.
+
+    main_ax_pos = [0.05, axes_bottom + 0.05, 0.9, 1 - (axes_bottom + 0.05) - 0.02];
+    set(ax, 'Position', main_ax_pos);
+
+    % Align Spiking Axes to Main Axes
+    if show_spiking
+        sax = findobj(sf, 'Tag', 'SpikingAxes');
+        slb = findobj(sf, 'Tag', 'SpikingList');
+        stt = findobj(sf, 'Tag', 'SpikingTitle');
+
+        % Spiking Axes on Left 60% of Spiking Frame
+        % Top/Bottom alignment should match MainAxes relative to Frame Height
+        % MainAxes bottom is (axes_bottom + 0.05) normalized to Frame.
+        % MainAxes height is ...
+
+        spiking_ax_pos = [0.1, main_ax_pos(2), 0.5, main_ax_pos(4)];
+        set(sax, 'Position', spiking_ax_pos);
+
+        % Listbox on Right
+        set(slb, 'Position', [0.65, 0, 0.35, 0.9]);
+
+        % Title
+        set(stt, 'Position', [0.65, 0.9, 0.35, 0.1]);
+    end
 
     update_view(fig);
 end
