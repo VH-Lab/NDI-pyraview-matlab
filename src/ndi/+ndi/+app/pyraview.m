@@ -677,50 +677,9 @@ function plot_data(fig)
         yl_old = [];
     end
 
-    numSamples = size(data, 1);
-    numChannels = size(data, 2);
+    [X, Y] = ndi.app.pyraview.transformPlotData(data, tVec, level, spacing);
 
-    if level == 0
-        totalPoints = numChannels * (numSamples + 1);
-        X = NaN(totalPoints, 1);
-        Y = NaN(totalPoints, 1);
-
-        for c = 1:numChannels
-            offset = (c-1) * spacing;
-            startIdx = (c-1) * (numSamples + 1) + 1;
-            endIdx = startIdx + numSamples - 1;
-
-            X(startIdx:endIdx) = tVec;
-            Y(startIdx:endIdx) = data(:, c) + offset;
-        end
-        plot(ud.axes, X, Y);
-
-    else
-        pointsPerSample = 3;
-        totalPoints = numSamples * pointsPerSample * numChannels;
-
-        X = NaN(totalPoints, 1);
-        Y = NaN(totalPoints, 1);
-
-        for c = 1:numChannels
-            offset = (c-1) * spacing;
-            mins = data(:, c, 1) + offset;
-            maxs = data(:, c, 2) + offset;
-
-            tempY = [mins'; maxs'; nan(1, numSamples)];
-            tempX = [tVec'; tVec'; nan(1, numSamples)];
-
-            colY = tempY(:);
-            colX = tempX(:);
-
-            startIdx = (c-1) * numel(colY) + 1;
-            endIdx = startIdx + numel(colY) - 1;
-
-            X(startIdx:endIdx) = colX;
-            Y(startIdx:endIdx) = colY;
-        end
-        plot(ud.axes, X, Y);
-    end
+    plot(ud.axes, X, Y);
 
     % Restore X limits
     xlim(ud.axes, [ud.view_t0, ud.view_t0 + ud.view_duration]);
@@ -842,8 +801,6 @@ function on_resize(fig)
     % Axes
     % Starts above buttons
     axes_bottom = 2*sb_h_norm + btn_h_norm;
-    % Make sure we handle if buttons are higher than expected?
-    % Buttons are at 2*sb_h_norm, height btn_h_norm. Top is at 2*sb_h + btn_h.
 
     main_ax_pos = [0.05, axes_bottom + 0.05, 0.9, 1 - (axes_bottom + 0.05) - 0.02];
     set(ax, 'Position', main_ax_pos);
@@ -855,9 +812,7 @@ function on_resize(fig)
         stt = findobj(sf, 'Tag', 'SpikingTitle');
 
         % Spiking Axes on Left 60% of Spiking Frame
-        % Top/Bottom alignment should match MainAxes relative to Frame Height
-        % MainAxes bottom is (axes_bottom + 0.05) normalized to Frame.
-        % MainAxes height is ...
+        % Align bottom/top to MainAxes relative to Frame Height
 
         spiking_ax_pos = [0.1, main_ax_pos(2), 0.5, main_ax_pos(4)];
         set(sax, 'Position', spiking_ax_pos);
