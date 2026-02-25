@@ -150,5 +150,6 @@ function pyraview_doc = makePyraviewDoc(probe, epochid, filterband, options)
         pyraview_doc = pyraview_doc.add_file(['level' int2str(i) '.bin'],[prefix '_L' int2str(i) '.bin']);
     end
 
-    % Note: We are NOT adding it to the database as per instructions.
+    % Add to database
+    probe.session.database_add(pyraview_doc);
 end
