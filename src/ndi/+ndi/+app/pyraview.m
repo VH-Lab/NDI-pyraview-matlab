@@ -391,9 +391,12 @@ function load_spiking_neurons(fig)
         n_doc = [];
         if ~isempty(n_docs)
             n_doc = n_docs{1};
-            if isfield(n_doc.document_properties, 'neuron_extracellular') && ...
-               isfield(n_doc.document_properties.neuron_extracellular, 'quality')
-               quality = n_doc.document_properties.neuron_extracellular.quality;
+            if isfield(n_doc.document_properties, 'neuron_extracellular')
+               if isfield(n_doc.document_properties.neuron_extracellular, 'quality_number')
+                   quality = n_doc.document_properties.neuron_extracellular.quality_number;
+               elseif isfield(n_doc.document_properties.neuron_extracellular, 'quality')
+                   quality = n_doc.document_properties.neuron_extracellular.quality;
+               end
             end
         end
 
@@ -410,7 +413,7 @@ function load_spiking_neurons(fig)
     strs = {spiking_info.label};
 
     lb = findobj(fig, 'Tag', 'SpikingList');
-    set(lb, 'String', strs);
+    set(lb, 'String', strs, 'UserData', []); % Don't need raw IDs if we have struct
     set(lb, 'Max', max(2, numel(strs))); % Allow multiple selection
     if ~isempty(strs)
         set(lb, 'Value', 1:numel(strs));
