@@ -124,14 +124,11 @@ function pyraview_doc = makePyraviewDoc(probe, epochid, filterband, options)
              if start_idx <= end_idx
                  data_central = data(start_idx:end_idx, :);
 
-                 % Call Pyraview MEX
-                 % status = pyraview(data, prefix, steps, nativeRate, [append], [numThreads])
-                 % Using pyraview.pyraview as updated
-                 try
-                     pyraview.pyraview(data_central, prefix, steps, nativeRate, append);
-                 catch mex_err
-                     warning(['Pyraview MEX failed: ' mex_err.message]);
-                 end
+                 %try
+                     pyraview.pyraview(data_central, prefix, steps, nativeRate, t0, append);
+                 %catch mex_err
+                 %    warning(['Pyraview MEX failed: ' mex_err.message]);
+                 %end
              end
         end
 
@@ -142,14 +139,14 @@ function pyraview_doc = makePyraviewDoc(probe, epochid, filterband, options)
     % Create an ndi.document of type 'pyraview'
 
     epochidStruct.epochid = epochid;
-    pyraview.label = filterband;
-    pyraview.nativeRate = sr;
-    pyraview.nativeStart = t0;
-    pyraview.channels = size(data_central,2);
-    pyraview.dataType = 'double';
-    pyraview.decimationLevels = steps;
-    pyraview.decimationSamplingRate = sr / cumprod(pyraview.decimationLevels);
-    pyraview.decimationStartTime = t0*ones(numel(puraview.decimationLevels,1);
+    pyraviewStruct.label = filterband;
+    pyraviewStruct.nativeRate = sr;
+    pyraviewStruct.nativeStart = t0;
+    pyraviewStruct.channels = size(data_central,2);
+    pyraviewStruct.dataType = 'double';
+    pyraviewStruct.decimationLevels = steps;
+    pyraviewStruct.decimationSamplingRate = sr ./ cumprod(pyraviewStruct.decimationLevels);
+    pyraviewStruct.decimationStartTime = t0*ones(numel(pyraviewStruct.decimationLevels),1);
 
     filterStruct.type = filterband;
     filterStruct.algorithm = 'chebyshev_1';
@@ -159,9 +156,13 @@ function pyraview_doc = makePyraviewDoc(probe, epochid, filterband, options)
         'passBandRipple', 0.8, ...
         'stopbandAttentuation', NaN);
 
-    pyraview_doc = ndi.document('pyraview', 'pyraview', pyraview, ...
+    pyraview_doc = ndi.document('pyraview', 'pyraview', pyraviewStruct, ...
       'epochid', epochidStruct, 'filter', filterStruct);
     pyraview_doc = pyraview_doc.set_dependency_value('element_id', probe.id());
+    % to do: must add files here, e.g.
+    for i=1:numel(steps)
+        pyraview_doc = pyraview_doc.add_file(['level' int2str(i) '.bin'],[prefix '_L' int2str(i) '.bin']);
+    end
 
     % Note: We are NOT adding it to the database as per instructions.
 end
