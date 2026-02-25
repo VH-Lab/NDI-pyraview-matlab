@@ -49,6 +49,8 @@ function pyraview(app_options)
         ud.current_data = []; % Store loaded data
         ud.current_time = []; % Store loaded time
         ud.current_level = []; % Store loaded level
+        ud.loaded_pixel_span = 0; % Store pixel span used for loading
+        ud.loaded_view_duration = Inf; % Store duration used for loading
         ud.view_t0 = 0; % Start of current view
         ud.view_duration = 1; % Duration of current view
         ud.channel_y_spacing = 100; % Default spacing
@@ -232,7 +234,6 @@ function update_epoch_list(fig, ud)
         return;
     end
 
-    % Validate val
     if val > numel(probes)
         val = 1;
         set(pm, 'Value', 1);
@@ -242,7 +243,6 @@ function update_epoch_list(fig, ud)
     et = selected_probe.epochtable();
     epoch_ids = {et.epoch_id};
 
-    % Add empty slot with a spacer
     epoch_list = [{' '}, epoch_ids];
 
     em = findobj(fig, 'Tag', 'EpochMenu');
@@ -252,7 +252,6 @@ end
 function check_and_load(fig)
     ud = get(fig, 'UserData');
 
-    % 1. Get Selections
     pm = findobj(fig, 'Tag', 'ProbeMenu');
     probe_idx = get(pm, 'Value');
     if isempty(ud.probes) || probe_idx > numel(ud.probes)
@@ -269,7 +268,6 @@ function check_and_load(fig)
     epoch_str = epoch_strs{epoch_val};
 
     if strcmp(epoch_str, ' ')
-        % No epoch selected
         return;
     end
 
@@ -278,13 +276,11 @@ function check_and_load(fig)
     band_val = get(bm, 'Value');
     band_str = band_strs{band_val};
 
-    % 2. Check Memory (UserData)
     doc = [];
     if isfield(ud, 'current_doc') && ~isempty(ud.current_doc)
         try
             doc_props = ud.current_doc.document_properties;
             match_epoch = strcmp(doc_props.epochid.epochid, epoch_str);
-            % Corrected to check filter.type based on schema
             if isfield(doc_props, 'filter') && isfield(doc_props.filter, 'type')
                 match_band = strcmp(doc_props.filter.type, band_str);
             else
@@ -297,17 +293,15 @@ function check_and_load(fig)
                 disp('Using cached document from memory.');
             end
         catch
-            % Structure mismatch, ignore cache
         end
     end
 
-    % 3. Search for Document in DB if not found in cache
     if isempty(doc)
         session = ud.session;
         q1 = ndi.query('','isa','pyraview');
         q2 = ndi.query('','depends_on','element_id', probe.id());
         q3 = ndi.query('epochid.epochid', 'exact_string', epoch_str);
-        q4 = ndi.query('filter.type', 'exact_string', band_str); % Use filter.type
+        q4 = ndi.query('filter.type', 'exact_string', band_str);
         q = q1 & q2 & q3 & q4;
         docs = session.database_search(q);
 
@@ -326,41 +320,28 @@ function check_and_load(fig)
         end
     end
 
-    % Update UserData with new doc
     ud.current_doc = doc;
 
-    % Get Epoch start/end times
-    % From document or probe? Document has epochclocktimes
     try
         t0_t1 = doc.document_properties.epochclocktimes.t0_t1;
         ud.epoch_t0 = t0_t1(1);
         ud.epoch_t1 = t0_t1(2);
     catch
-        % Fallback to probe
-        et = probe.epochtable();
-        match_idx = find(strcmp({et.epoch_id}, epoch_str), 1);
-        % assuming dev_local_time exists per makePyraviewDoc logic
-        % But we need to find the right clock.
-        % For simplicity, let's assume makePyraviewDoc populated doc correctly.
-        ud.epoch_t0 = 0; ud.epoch_t1 = 100; % Dummy fallback
+        ud.epoch_t0 = 0; ud.epoch_t1 = 100;
     end
 
-    % Initialize View
-    % Default duration: 10s or full duration if shorter
     full_dur = ud.epoch_t1 - ud.epoch_t0;
     ud.view_duration = min(10, full_dur);
     ud.view_t0 = ud.epoch_t0;
 
-    % Reset loaded data range to force reload
     ud.current_data_t0 = -Inf;
     ud.current_data_t1 = -Inf;
+    ud.loaded_pixel_span = 0;
+    ud.loaded_view_duration = Inf;
 
     set(fig, 'UserData', ud);
 
-    % Update Scrollbars to reflect initial state
     update_scrollbars(fig, ud);
-
-    % Load Data and Plot
     update_view(fig);
 end
 
@@ -370,7 +351,7 @@ function update_spacing(fig)
     str = get(se, 'String');
     val = str2double(str);
     if isnan(val)
-        val = 100; % Default fallback
+        val = 100;
         set(se, 'String', '100');
     end
     ud.channel_y_spacing = val;
@@ -381,38 +362,71 @@ end
 function update_from_scrollbars(fig, ud)
     % Read scrollbar values and update view_t0 / view_duration
 
-    s1 = findobj(fig, 'Tag', 'Scroll1'); % Zoom/Duration
-    s2 = findobj(fig, 'Tag', 'Scroll2'); % Pan/Position
+    s1 = findobj(fig, 'Tag', 'Scroll1'); % Pan
+    s2 = findobj(fig, 'Tag', 'Scroll2'); % Zoom
 
-    val1 = get(s1, 'Value');
-    val2 = get(s2, 'Value');
+    val_pan = get(s1, 'Value');
+    val_zoom = get(s2, 'Value');
 
     full_dur = ud.epoch_t1 - ud.epoch_t0;
     if full_dur <= 0, full_dur = 1; end
 
-    % Map val1 (0..1) to duration.
-    % 0 -> full_dur (zoomed out)
-    % 1 -> min_dur (zoomed in)
     min_dur = 0.01; % 10ms
-    % Log scale for smooth zoom
-    % dur = exp( log(full_dur) * (1-val1) + log(min_dur) * val1 )
-    ud.view_duration = exp( log(full_dur) * (1-val1) + log(min_dur) * val1 );
 
-    % Map val2 (0..1) to view_t0
-    % view_t0 ranges from epoch_t0 to epoch_t1 - view_duration
-    max_start = ud.epoch_t1 - ud.view_duration;
-    if max_start < ud.epoch_t0, max_start = ud.epoch_t0; end
+    % ZOOM Logic: Maintain center time
+    % Calculate old center
+    center_t = ud.view_t0 + ud.view_duration / 2;
 
-    ud.view_t0 = ud.epoch_t0 + val2 * (max_start - ud.epoch_t0);
+    % New Duration
+    new_duration = exp( log(full_dur) * (1-val_zoom) + log(min_dur) * val_zoom );
+    ud.view_duration = new_duration;
+
+    % New T0 based on old center
+    new_t0 = center_t - new_duration / 2;
+
+    % Clamp T0 to epoch bounds
+    if new_t0 < ud.epoch_t0
+        new_t0 = ud.epoch_t0;
+    end
+    if new_t0 + new_duration > ud.epoch_t1
+        new_t0 = ud.epoch_t1 - new_duration;
+    end
+    % If duration > full epoch (shouldn't happen with logic above), clamp t0
+    if new_t0 < ud.epoch_t0
+        new_t0 = ud.epoch_t0;
+    end
+
+    ud.view_t0 = new_t0;
+
+    % Update Pan Scrollbar to match new T0 (because we shifted T0)
+    % update_view will call update_scrollbars if we don't do it here?
+    % Better to let update_scrollbars handle syncing UI to state.
+
+    % PAN Logic: If this callback was triggered by Pan scrollbar?
+    % We don't know which scrollbar triggered it easily unless we check gcbo
+    % But we can assume if Pan changed, we respect Pan.
+    % If Zoom changed, we respect Zoom (center logic).
+    % Since we read both, we might conflict.
+    % Better to check `gcbo` tag.
+
+    obj = gcbo;
+    if ~isempty(obj)
+        tag = get(obj, 'Tag');
+        if strcmp(tag, 'Scroll1') % Pan
+            % Standard Pan Logic
+            max_start = ud.epoch_t1 - ud.view_duration;
+            if max_start < ud.epoch_t0, max_start = ud.epoch_t0; end
+            ud.view_t0 = ud.epoch_t0 + val_pan * (max_start - ud.epoch_t0);
+        elseif strcmp(tag, 'Scroll2') % Zoom
+            % Already handled above (Center Logic)
+        end
+    end
 
     set(fig, 'UserData', ud);
     update_view(fig);
 end
 
 function update_scrollbars(fig, ud)
-    % Update scrollbar positions based on current view_t0 / view_duration
-    % (Inverse of update_from_scrollbars)
-
     s1 = findobj(fig, 'Tag', 'Scroll1');
     s2 = findobj(fig, 'Tag', 'Scroll2');
 
@@ -420,33 +434,27 @@ function update_scrollbars(fig, ud)
     if full_dur <= 0, full_dur = 1; end
     min_dur = 0.01;
 
-    % Calculate val1
-    % log(dur) = log(full) * (1-v) + log(min) * v
-    % log(dur) - log(full) = v * (log(min) - log(full))
-    % v = (log(dur) - log(full)) / (log(min) - log(full))
+    % Calculate val_zoom (Scroll2)
     num = log(ud.view_duration) - log(full_dur);
     den = log(min_dur) - log(full_dur);
-    val1 = num / den;
-    val1 = max(0, min(1, val1));
+    val_zoom = num / den;
+    val_zoom = max(0, min(1, val_zoom));
 
-    set(s2, 'Value', val1);
+    set(s2, 'Value', val_zoom);
 
-    % Calculate val2
-    % t0 = epoch_t0 + v * (max_start - epoch_t0)
+    % Calculate val_pan (Scroll1)
     max_start = ud.epoch_t1 - ud.view_duration;
     if max_start <= ud.epoch_t0
-        val2 = 0;
+        val_pan = 0;
     else
-        val2 = (ud.view_t0 - ud.epoch_t0) / (max_start - ud.epoch_t0);
+        val_pan = (ud.view_t0 - ud.epoch_t0) / (max_start - ud.epoch_t0);
     end
-    val2 = max(0, min(1, val2));
+    val_pan = max(0, min(1, val_pan));
 
-    set(s1, 'Value', val2);
+    set(s1, 'Value', val_pan);
 end
 
 function on_zoom_pan(fig, ~)
-    % Callback for MATLAB zoom/pan tools
-    % Update ud.view_t0 and ud.view_duration from axes limits
     ud = get(fig, 'UserData');
     ax = ud.axes;
     xl = xlim(ax);
@@ -465,13 +473,30 @@ function update_view(fig)
         return;
     end
 
-    % Determine if we need to load new data
     req_t0 = ud.view_t0;
     req_t1 = req_t0 + ud.view_duration;
 
     needs_load = false;
 
+    % Edge check
     if req_t0 < ud.current_data_t0 || req_t1 > ud.current_data_t1
+        needs_load = true;
+    end
+
+    % Resolution check
+    ax_pos = getpixelposition(ud.axes);
+    current_pixel_span = ax_pos(3);
+
+    % If pixel span changed significantly (>10%)
+    if abs(current_pixel_span - ud.loaded_pixel_span) / ud.loaded_pixel_span > 0.1
+        needs_load = true;
+    end
+
+    % If zoom level changed significantly (>20%)
+    % We compare duration per pixel? Or just total duration if pixels are roughly same.
+    % Easier: if view_duration is much smaller than loaded_view_duration (zoomed in),
+    % we might need new level.
+    if ud.view_duration < ud.loaded_view_duration * 0.8
         needs_load = true;
     end
 
@@ -479,10 +504,7 @@ function update_view(fig)
         probe_idx = get(findobj(fig, 'Tag', 'ProbeMenu'), 'Value');
         probe = ud.probes{probe_idx};
 
-        ax_pos = getpixelposition(ud.axes);
-        pixelSpan = ax_pos(3);
-
-        [tVec, data, level] = ndi.app.pyraview.getData(probe, ud.current_doc, req_t0, req_t1, pixelSpan);
+        [tVec, data, level] = ndi.app.pyraview.getData(probe, ud.current_doc, req_t0, req_t1, current_pixel_span);
 
         if ~isempty(tVec)
             ud.current_data_t0 = tVec(1);
@@ -490,6 +512,8 @@ function update_view(fig)
             ud.current_data = data;
             ud.current_time = tVec;
             ud.current_level = level;
+            ud.loaded_pixel_span = current_pixel_span;
+            ud.loaded_view_duration = ud.view_duration;
 
             set(fig, 'UserData', ud);
             plot_data(fig);
@@ -497,9 +521,11 @@ function update_view(fig)
             cla(ud.axes);
         end
     else
-        % Data is already loaded, just update limits
         xlim(ud.axes, [req_t0, req_t1]);
     end
+
+    % Force scrollbar sync if not called from there?
+    update_scrollbars(fig, ud);
 end
 
 function plot_data(fig)
@@ -519,36 +545,21 @@ function plot_data(fig)
     numChannels = size(data, 2);
 
     if level == 0
-        % Raw Data: Samples x Channels
-        % Construct single X and Y vectors
-        % Y: data(:,c) + (c-1)*spacing
-        % Separate channels with NaN
-
         totalPoints = numChannels * (numSamples + 1);
-
         X = NaN(totalPoints, 1);
         Y = NaN(totalPoints, 1);
 
         for c = 1:numChannels
             offset = (c-1) * spacing;
-
             startIdx = (c-1) * (numSamples + 1) + 1;
             endIdx = startIdx + numSamples - 1;
 
             X(startIdx:endIdx) = tVec;
             Y(startIdx:endIdx) = data(:, c) + offset;
-
-            % The next point (endIdx+1) is already NaN by initialization
         end
-
         plot(ud.axes, X, Y);
 
     else
-        % Decimated Data: Samples x Channels x 2
-        % Construct single X and Y vectors for vertical bars
-        % For each sample i, channel c: (t(i), min), (t(i), max), (NaN, NaN)
-        % This creates 3 points per sample per channel.
-
         pointsPerSample = 3;
         totalPoints = numSamples * pointsPerSample * numChannels;
 
@@ -557,17 +568,12 @@ function plot_data(fig)
 
         for c = 1:numChannels
             offset = (c-1) * spacing;
-
-            % Vectorized construction for channel c
             mins = data(:, c, 1) + offset;
             maxs = data(:, c, 2) + offset;
 
-            % We want sequence: min, max, nan
-            % Create [3 x N] matrix
             tempY = [mins'; maxs'; nan(1, numSamples)];
             tempX = [tVec'; tVec'; nan(1, numSamples)];
 
-            % Flatten to column
             colY = tempY(:);
             colX = tempX(:);
 
@@ -577,11 +583,9 @@ function plot_data(fig)
             X(startIdx:endIdx) = colX;
             Y(startIdx:endIdx) = colY;
         end
-
         plot(ud.axes, X, Y);
     end
 
-    % Restore limits
     xlim(ud.axes, [ud.view_t0, ud.view_t0 + ud.view_duration]);
 end
 
