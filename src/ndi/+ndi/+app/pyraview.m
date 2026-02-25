@@ -54,6 +54,7 @@ function pyraview(app_options)
         ud.view_t0 = 0; % Start of current view
         ud.view_duration = 1; % Duration of current view
         ud.channel_y_spacing = 100; % Default spacing
+        ud.spiking_elements = {}; % Store spiking element objects
 
         % Create Controls (Positions will be set by ResizeFcn)
 
@@ -208,6 +209,10 @@ function pyraview(app_options)
                 update_spacing(fig);
             case 'SpikingCheckbox'
                 on_resize(fig);
+                val = get(findobj(fig, 'Tag', 'SpikingCheckbox'), 'Value');
+                if val
+                    load_spiking_neurons(fig);
+                end
             case 'Scroll1' % Pan
                 update_from_scrollbars(fig, ud);
             case 'Scroll2' % Zoom
@@ -343,6 +348,52 @@ function check_and_load(fig)
 
     update_scrollbars(fig, ud);
     update_view(fig);
+
+    % Check for spiking
+    cb = findobj(fig, 'Tag', 'SpikingCheckbox');
+    if get(cb, 'Value')
+        load_spiking_neurons(fig);
+    end
+end
+
+function load_spiking_neurons(fig)
+    ud = get(fig, 'UserData');
+
+    pm = findobj(fig, 'Tag', 'ProbeMenu');
+    probe_idx = get(pm, 'Value');
+    if isempty(ud.probes) || probe_idx > numel(ud.probes)
+        return;
+    end
+    probe = ud.probes{probe_idx};
+    session = ud.session;
+
+    Q1 = ndi.query('element.type','exact_string','spikes');
+    Q2 = ndi.query('','depends_on','underlying_element_id', probe.id());
+    Q = Q1 & Q2;
+
+    docs = session.database_search(Q);
+
+    elements = {};
+    for i=1:numel(docs)
+        elements{end+1} = ndi.database.fun.ndi_document2ndi_object(docs{i}, session);
+    end
+
+    ud.spiking_elements = elements;
+    set(fig, 'UserData', ud);
+
+    strs = {};
+    if ~isempty(elements)
+        strs = cellfun(@(x) x.elementstring(), elements, 'UniformOutput', false);
+    end
+
+    lb = findobj(fig, 'Tag', 'SpikingList');
+    set(lb, 'String', strs);
+    set(lb, 'Max', max(2, numel(strs))); % Allow multiple selection (Max > 1)
+    if ~isempty(strs)
+        set(lb, 'Value', 1:numel(strs));
+    else
+        set(lb, 'Value', []);
+    end
 end
 
 function update_spacing(fig)
@@ -399,15 +450,6 @@ function update_from_scrollbars(fig, ud)
     ud.view_t0 = new_t0;
 
     % Update Pan Scrollbar to match new T0 (because we shifted T0)
-    % update_view will call update_scrollbars if we don't do it here?
-    % Better to let update_scrollbars handle syncing UI to state.
-
-    % PAN Logic: If this callback was triggered by Pan scrollbar?
-    % We don't know which scrollbar triggered it easily unless we check gcbo
-    % But we can assume if Pan changed, we respect Pan.
-    % If Zoom changed, we respect Zoom (center logic).
-    % Since we read both, we might conflict.
-    % Better to check `gcbo` tag.
 
     obj = gcbo;
     if ~isempty(obj)
@@ -493,9 +535,6 @@ function update_view(fig)
     end
 
     % If zoom level changed significantly (>20%)
-    % We compare duration per pixel? Or just total duration if pixels are roughly same.
-    % Easier: if view_duration is much smaller than loaded_view_duration (zoomed in),
-    % we might need new level.
     if ud.view_duration < ud.loaded_view_duration * 0.8
         needs_load = true;
     end
