@@ -65,6 +65,12 @@ function pyraview_doc = makePyraviewDoc(probe, epochid, filterband, options)
     nativeRate = sr;
     append = true;
 
+    % Initialize Progress Bar
+    pb_fig = figure('Name', 'Pyraview Progress', 'NumberTitle', 'off', 'MenuBar', 'none', ...
+                    'ToolBar', 'none', 'Resize', 'off', 'Position', [500 500 520 80]);
+    pb = ndi.gui.component.NDIProgressBar(struct('Parent', pb_fig, ...
+        'Message', 'Initializing...', 'Text', 'Starting data processing...'));
+
     % 5. Loop and Process Chunks
     chunk_dur = options.chunkDuration;
     excess = options.chunkExcess;
@@ -74,7 +80,18 @@ function pyraview_doc = makePyraviewDoc(probe, epochid, filterband, options)
     % Initialize data_central size for metadata
     data_channels = 0;
 
+    total_dur = t1 - t0;
+    if total_dur <= 0, total_dur = 1; end
+
+    cleanupObj = onCleanup(@() delete(pb_fig));
+
     while current_t < t1
+        % Update Progress
+        progress = (current_t - t0) / total_dur;
+        pb.Value = progress;
+        pb.Message = sprintf('Processing %.1f%%...', progress * 100);
+        drawnow;
+
         % Define read times with excess
         t_read_start = current_t - excess;
         t_read_end = current_t + chunk_dur + excess;
@@ -124,6 +141,10 @@ function pyraview_doc = makePyraviewDoc(probe, epochid, filterband, options)
 
         current_t = current_t + chunk_dur;
     end
+
+    pb.Value = 1;
+    pb.Message = 'Completed.';
+    drawnow;
 
     % 6. Create Document
     % Create an ndi.document of type 'pyraview'
