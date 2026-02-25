@@ -141,12 +141,12 @@ function pyraview_doc = makePyraviewDoc(probe, epochid, filterband, options)
     epochidStruct.epochid = epochid;
     pyraviewStruct.label = filterband;
     pyraviewStruct.nativeRate = sr;
-    pyraviewStruct.nativeStart = t0;
+    pyraviewStruct.nativeStartTime = t0;
     pyraviewStruct.channels = size(data_central,2);
     pyraviewStruct.dataType = 'double';
     pyraviewStruct.decimationLevels = steps;
-    pyraviewStruct.decimationSamplingRate = sr ./ cumprod(pyraviewStruct.decimationLevels);
-    pyraviewStruct.decimationStartTime = t0*ones(numel(pyraviewStruct.decimationLevels),1);
+    pyraviewStruct.decimationSamplingRates = sr ./ cumprod(pyraviewStruct.decimationLevels);
+    pyraviewStruct.decimationStartTimes = t0*ones(numel(pyraviewStruct.decimationLevels),1);
 
     filterStruct.type = filterband;
     filterStruct.algorithm = 'chebyshev_1';
@@ -156,8 +156,12 @@ function pyraview_doc = makePyraviewDoc(probe, epochid, filterband, options)
         'passBandRipple', 0.8, ...
         'stopbandAttentuation', NaN);
 
+    epochclocktimesStruct.clocktype='dev_local_time';
+    epochclocktimesStruct.t0_t1 = [t0;t1];
+
     pyraview_doc = ndi.document('pyraview', 'pyraview', pyraviewStruct, ...
-      'epochid', epochidStruct, 'filter', filterStruct);
+      'epochid', epochidStruct, 'filter', filterStruct, ...
+      'epochclocktimes', epochclocktimesStruct) + probe.session.newdocument();
     pyraview_doc = pyraview_doc.set_dependency_value('element_id', probe.id());
     % to do: must add files here, e.g.
     for i=1:numel(steps)
