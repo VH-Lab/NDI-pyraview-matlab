@@ -21,6 +21,7 @@ function [filtered_data, filterStruct] = filterData(data, sr, type)
 
     % Define filter parameters
     filterStruct.type = type;
+    filterStruct.label = type;
     filterStruct.algorithm = 'chebyshev_1';
     filterStruct.parameters = struct('sampleFrequency', sr, ...
         'order', 4, ...

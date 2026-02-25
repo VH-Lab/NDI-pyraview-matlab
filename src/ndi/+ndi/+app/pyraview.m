@@ -212,7 +212,12 @@ function check_and_load(fig)
         try
             doc_props = ud.current_doc.document_properties;
             match_epoch = strcmp(doc_props.epochid.epochid, epoch_str);
-            match_band = strcmp(doc_props.pyraview.filter.band, band_str);
+            % Corrected to check filter.type based on schema
+            if isfield(doc_props, 'filter') && isfield(doc_props.filter, 'type')
+                match_band = strcmp(doc_props.filter.type, band_str);
+            else
+                match_band = false;
+            end
             match_element = strcmp(ud.current_doc.dependency_value('element_id'), probe.id());
 
             if match_epoch && match_band && match_element
@@ -230,7 +235,7 @@ function check_and_load(fig)
         q1 = ndi.query('','isa','pyraview');
         q2 = ndi.query('','depends_on','element_id', probe.id());
         q3 = ndi.query('epochid.epochid', 'exact_string', epoch_str);
-        q4 = ndi.query('pyraview.filter.band', 'exact_string', band_str);
+        q4 = ndi.query('filter.type', 'exact_string', band_str); % Use filter.type
         q = q1 & q2 & q3 & q4;
         docs = session.database_search(q);
 
