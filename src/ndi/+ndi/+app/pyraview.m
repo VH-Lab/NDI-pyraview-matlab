@@ -42,6 +42,12 @@ function pyraview(app_options)
         ud = struct();
         ud.session = session;
         ud.current_doc = [];
+        ud.epoch_t0 = 0;
+        ud.epoch_t1 = 0;
+        ud.current_data_t0 = -Inf; % Start of currently loaded data buffer
+        ud.current_data_t1 = -Inf; % End of currently loaded data buffer
+        ud.view_t0 = 0; % Start of current view
+        ud.view_duration = 1; % Duration of current view
 
         % Create Controls (Positions will be set by ResizeFcn)
 
@@ -96,24 +102,29 @@ function pyraview(app_options)
              'Position', [0 0 1 1], 'Tag', 'MainAxes'); % Position will be adjusted in layout
         ud.axes = ax;
 
-        % Scrollbar 1 (Top)
+        % Setup zoom/pan callbacks on axes
+        z = zoom(fig);
+        z.ActionPostCallback = @(src, event) on_zoom_pan(fig, event);
+        p = pan(fig);
+        p.ActionPostCallback = @(src, event) on_zoom_pan(fig, event);
+
+
+        % Scrollbar 1 (Zoom / Scale) - Duration
+        % Normalized 0..1 corresponds to some log scale of duration?
         uicontrol(frame_panel, 'Style', 'slider', 'Units', 'normalized', ...
              'Position', [0 0 1 1], ...
              'Tag', 'Scroll1', 'Callback', callbackstr, ...
-             'Min', 1, 'Max', 100, 'Value', 1, 'SliderStep', [1/99, 10/99]);
+             'Min', 0, 'Max', 1, 'Value', 0.5, 'SliderStep', [0.01, 0.1]);
 
-        % Scrollbar 2 (Bottom)
+        % Scrollbar 2 (Pan) - Time Position
+        % Normalized 0..1 corresponds to t0..t1
         uicontrol(frame_panel, 'Style', 'slider', 'Units', 'normalized', ...
              'Position', [0 0 1 1], ...
              'Tag', 'Scroll2', 'Callback', callbackstr, ...
-             'Min', -100, 'Max', 100, 'Value', 0, 'SliderStep', [1/200, 10/200]);
+             'Min', 0, 'Max', 1, 'Value', 0, 'SliderStep', [0.01, 0.1]);
 
         set(fig, 'UserData', ud);
 
-        % Set Resize function.
-        % Since this is now a function, we pass a handle to the local function on_resize.
-        % BUT for persistence/callbacks, we need it to be findable?
-        % Actually, anonymous function handle to local function works fine as long as the function is in scope when defined.
         set(fig, 'SizeChangedFcn', @(src, event) on_resize(src));
 
         % Trigger initial layout and update
@@ -122,18 +133,19 @@ function pyraview(app_options)
 
     else
         % Handle Commands
+        ud = get(fig, 'UserData');
         switch command
             case 'ProbeMenu'
-                update_epoch_list(fig, get(fig, 'UserData'));
-                check_and_load(fig, get(fig, 'UserData'));
+                update_epoch_list(fig, ud);
+                check_and_load(fig);
             case 'EpochMenu'
-                check_and_load(fig, get(fig, 'UserData'));
+                check_and_load(fig);
             case 'BandMenu'
-                check_and_load(fig, get(fig, 'UserData'));
-            case 'Scroll1'
-                % Do nothing
-            case 'Scroll2'
-                % Do nothing
+                check_and_load(fig);
+            case 'Scroll1' % Zoom
+                update_from_scrollbars(fig, ud);
+            case 'Scroll2' % Pan
+                update_from_scrollbars(fig, ud);
         end
     end
 end
@@ -165,8 +177,8 @@ function update_epoch_list(fig, ud)
     set(em, 'String', epoch_list, 'Value', 1);
 end
 
-function check_and_load(fig, ud)
-    % Check if document exists, create if not
+function check_and_load(fig)
+    ud = get(fig, 'UserData');
 
     % 1. Get Selections
     pm = findobj(fig, 'Tag', 'ProbeMenu');
@@ -195,6 +207,7 @@ function check_and_load(fig, ud)
     band_str = band_strs{band_val};
 
     % 2. Check Memory (UserData)
+    doc = [];
     if isfield(ud, 'current_doc') && ~isempty(ud.current_doc)
         try
             doc_props = ud.current_doc.document_properties;
@@ -203,44 +216,228 @@ function check_and_load(fig, ud)
             match_element = strcmp(ud.current_doc.dependency_value('element_id'), probe.id());
 
             if match_epoch && match_band && match_element
+                doc = ud.current_doc;
                 disp('Using cached document from memory.');
-                return;
             end
         catch
             % Structure mismatch, ignore cache
         end
     end
 
-    % 3. Search for Document in DB
-    session = ud.session;
+    % 3. Search for Document in DB if not found in cache
+    if isempty(doc)
+        session = ud.session;
+        q1 = ndi.query('','isa','pyraview');
+        q2 = ndi.query('','depends_on','element_id', probe.id());
+        q3 = ndi.query('epochid.epochid', 'exact_string', epoch_str);
+        q4 = ndi.query('pyraview.filter.band', 'exact_string', band_str);
+        q = q1 & q2 & q3 & q4;
+        docs = session.database_search(q);
 
-    q1 = ndi.query('','isa','pyraview');
-    q2 = ndi.query('','depends_on','element_id', probe.id());
-    q3 = ndi.query('epochid.epochid', 'exact_string', epoch_str);
-    q4 = ndi.query('pyraview.filter.band', 'exact_string', band_str);
-
-    q = q1 & q2 & q3 & q4;
-
-    docs = session.database_search(q);
-
-    if isempty(docs)
-        % Create it
-        disp('Document not found, creating...');
-        try
-            % Call makePyraviewDoc from package
-            doc = ndi.app.pyraview_makePyraviewDoc(probe, epoch_str, band_str);
-            disp(['Created document with id: ' doc.id()]);
-
-            ud.current_doc = doc;
-            set(fig, 'UserData', ud);
-
-        catch e
-            disp(['Error creating document: ' e.message]);
+        if isempty(docs)
+            disp('Document not found, creating...');
+            try
+                doc = ndi.app.pyraview.makePyraviewDoc(probe, epoch_str, band_str);
+                disp(['Created document with id: ' doc.id()]);
+            catch e
+                disp(['Error creating document: ' e.message]);
+                return;
+            end
+        else
+            disp('Document found.');
+            doc = docs{1};
         end
+    end
+
+    % Update UserData with new doc
+    ud.current_doc = doc;
+
+    % Get Epoch start/end times
+    % From document or probe? Document has epochclocktimes
+    try
+        t0_t1 = doc.document_properties.epochclocktimes.t0_t1;
+        ud.epoch_t0 = t0_t1(1);
+        ud.epoch_t1 = t0_t1(2);
+    catch
+        % Fallback to probe
+        et = probe.epochtable();
+        match_idx = find(strcmp({et.epoch_id}, epoch_str), 1);
+        % assuming dev_local_time exists per makePyraviewDoc logic
+        % But we need to find the right clock.
+        % For simplicity, let's assume makePyraviewDoc populated doc correctly.
+        ud.epoch_t0 = 0; ud.epoch_t1 = 100; % Dummy fallback
+    end
+
+    % Initialize View
+    % Default duration: 10s or full duration if shorter
+    full_dur = ud.epoch_t1 - ud.epoch_t0;
+    ud.view_duration = min(10, full_dur);
+    ud.view_t0 = ud.epoch_t0;
+
+    % Reset loaded data range to force reload
+    ud.current_data_t0 = -Inf;
+    ud.current_data_t1 = -Inf;
+
+    set(fig, 'UserData', ud);
+
+    % Update Scrollbars to reflect initial state
+    update_scrollbars(fig, ud);
+
+    % Load Data and Plot
+    update_view(fig);
+end
+
+function update_from_scrollbars(fig, ud)
+    % Read scrollbar values and update view_t0 / view_duration
+
+    s1 = findobj(fig, 'Tag', 'Scroll1'); % Zoom/Duration
+    s2 = findobj(fig, 'Tag', 'Scroll2'); % Pan/Position
+
+    val1 = get(s1, 'Value');
+    val2 = get(s2, 'Value');
+
+    full_dur = ud.epoch_t1 - ud.epoch_t0;
+    if full_dur <= 0, full_dur = 1; end
+
+    % Map val1 (0..1) to duration.
+    % 0 -> full_dur (zoomed out)
+    % 1 -> min_dur (zoomed in)
+    min_dur = 0.01; % 10ms
+    % Log scale for smooth zoom
+    % dur = exp( log(full_dur) * (1-val1) + log(min_dur) * val1 )
+    ud.view_duration = exp( log(full_dur) * (1-val1) + log(min_dur) * val1 );
+
+    % Map val2 (0..1) to view_t0
+    % view_t0 ranges from epoch_t0 to epoch_t1 - view_duration
+    max_start = ud.epoch_t1 - ud.view_duration;
+    if max_start < ud.epoch_t0, max_start = ud.epoch_t0; end
+
+    ud.view_t0 = ud.epoch_t0 + val2 * (max_start - ud.epoch_t0);
+
+    set(fig, 'UserData', ud);
+    update_view(fig);
+end
+
+function update_scrollbars(fig, ud)
+    % Update scrollbar positions based on current view_t0 / view_duration
+    % (Inverse of update_from_scrollbars)
+
+    s1 = findobj(fig, 'Tag', 'Scroll1');
+    s2 = findobj(fig, 'Tag', 'Scroll2');
+
+    full_dur = ud.epoch_t1 - ud.epoch_t0;
+    if full_dur <= 0, full_dur = 1; end
+    min_dur = 0.01;
+
+    % Calculate val1
+    % log(dur) = log(full) * (1-v) + log(min) * v
+    % log(dur) - log(full) = v * (log(min) - log(full))
+    % v = (log(dur) - log(full)) / (log(min) - log(full))
+    num = log(ud.view_duration) - log(full_dur);
+    den = log(min_dur) - log(full_dur);
+    val1 = num / den;
+    val1 = max(0, min(1, val1));
+
+    set(s1, 'Value', val1);
+
+    % Calculate val2
+    % t0 = epoch_t0 + v * (max_start - epoch_t0)
+    max_start = ud.epoch_t1 - ud.view_duration;
+    if max_start <= ud.epoch_t0
+        val2 = 0;
     else
-        disp('Document found.');
-        ud.current_doc = docs{1};
+        val2 = (ud.view_t0 - ud.epoch_t0) / (max_start - ud.epoch_t0);
+    end
+    val2 = max(0, min(1, val2));
+
+    set(s2, 'Value', val2);
+end
+
+function on_zoom_pan(fig, ~)
+    % Callback for MATLAB zoom/pan tools
+    % Update ud.view_t0 and ud.view_duration from axes limits
+    ud = get(fig, 'UserData');
+    ax = ud.axes;
+    xl = xlim(ax);
+
+    ud.view_t0 = xl(1);
+    ud.view_duration = xl(2) - xl(1);
+
+    set(fig, 'UserData', ud);
+    update_scrollbars(fig, ud);
+    update_view(fig);
+end
+
+function update_view(fig)
+    ud = get(fig, 'UserData');
+    if isempty(ud.current_doc)
+        return;
+    end
+
+    % Determine if we need to load new data
+    % Check if current view is inside current data buffer with some margin?
+    % The prompt says: "only call getData when the real viewing axis (let's say t0 or t1) gets to the edge."
+    % This implies we maintain a buffer slightly larger than the view.
+    % getData itself implements `readExcess` for raw data, but here we manage the "viewport buffer".
+
+    req_t0 = ud.view_t0;
+    req_t1 = req_t0 + ud.view_duration;
+
+    % Check bounds against loaded data
+    % We assume loaded data is [ud.current_data_t0, ud.current_data_t1]
+    % If req_t0 < current_data_t0 OR req_t1 > current_data_t1, we are at or beyond the edge.
+
+    needs_load = false;
+
+    if req_t0 < ud.current_data_t0 || req_t1 > ud.current_data_t1
+        needs_load = true;
+    end
+
+    % If we are zoomed out significantly, we might need a different decimation level.
+    % getData handles decimation based on pixelSpan.
+    % If pixelSpan changes (resize) or duration changes (zoom), getData might return different level.
+    % So we should probably reload if zoom level changes significantly too?
+    % For now, let's stick to the "edge" logic for panning, but zooming naturally changes t1/t0 limits.
+
+    % Also, if we zoom out, we might need MORE data than loaded.
+
+    if needs_load
+        % Calculate buffer to load
+        % Load view +/- 1 screen width? Or just the view?
+        % Prompt: "return data from t0-delta to t1+delta, where delta is (t1-t0)"
+        % getData does this internal expansion based on inputs T0, T1.
+        % So we pass the VIEW coordinates to getData, and it returns expanded data.
+        % So we should update current_data_t0/t1 to reflect what getData returns.
+
+        probe_idx = get(findobj(fig, 'Tag', 'ProbeMenu'), 'Value');
+        probe = ud.probes{probe_idx};
+
+        % Get pixel width of axes
+        ax_pos = getpixelposition(ud.axes);
+        pixelSpan = ax_pos(3);
+
+        [tVec, data] = ndi.app.pyraview.getData(probe, ud.current_doc, req_t0, req_t1, pixelSpan);
+
+        if ~isempty(tVec)
+            ud.current_data_t0 = tVec(1);
+            ud.current_data_t1 = tVec(end);
+
+            % Plot data
+            plot(ud.axes, tVec, data);
+
+            % Restore limits because plot resets them
+            xlim(ud.axes, [req_t0, req_t1]);
+
+            ud.last_plot_data = data; % Optional caching if needed
+            ud.last_plot_time = tVec;
+        else
+            cla(ud.axes);
+        end
+
         set(fig, 'UserData', ud);
+    else
+        % Data is already loaded, just update limits
+        xlim(ud.axes, [req_t0, req_t1]);
     end
 end
 
@@ -283,31 +480,16 @@ function on_resize(fig)
     set(sep, 'Position', [0, sep_y, width, 1]);
 
     % Main Frame
-    % Left 3/4, 80% height.
-    % Placed below separator.
     frame_h = height * 0.8;
     frame_w = width * 0.75;
     frame_y = sep_y - margin - frame_h;
 
-    % Ensure frame doesn't go below 0 (simple check)
     if frame_y < margin, frame_y = margin; end
 
     mf = findobj(fig, 'Tag', 'MainFrame');
     set(mf, 'Position', [0, frame_y, frame_w, frame_h]);
 
-    % Adjust contents of MainFrame (Scrollbars and Axes)
-    % Since they are normalized, they should adjust automatically relative to panel size.
-    % But we need to define their normalized positions correctly once.
-    % Actually, if I define them with normalized units in creation, I don't need to update them here
-    % UNLESS I want fixed pixel height for scrollbars.
-    % Scrollbars are usually fixed height in pixels.
-    % So let's update them here using pixels logic inside the panel?
-    % But panel size changes.
-    % Let's use normalized for simplicity as per my previous thought,
-    % but ensure they are correctly placed.
-
     scrollbar_h_px = 20;
-    % We need to convert pixel height to normalized height for the panel
     if frame_h > 0
         sb_h_norm = scrollbar_h_px / frame_h;
     else
