@@ -41,6 +41,7 @@ function pyraview(app_options)
         % Initialize UserData
         ud = struct();
         ud.session = session;
+        ud.current_doc = [];
 
         % Create Controls (Positions will be set by ResizeFcn)
 
@@ -109,7 +110,10 @@ function pyraview(app_options)
 
         set(fig, 'UserData', ud);
 
-        % Set Resize function
+        % Set Resize function.
+        % Since this is now a function, we pass a handle to the local function on_resize.
+        % BUT for persistence/callbacks, we need it to be findable?
+        % Actually, anonymous function handle to local function works fine as long as the function is in scope when defined.
         set(fig, 'SizeChangedFcn', @(src, event) on_resize(src));
 
         % Trigger initial layout and update
@@ -121,17 +125,17 @@ function pyraview(app_options)
         switch command
             case 'ProbeMenu'
                 update_epoch_list(fig, get(fig, 'UserData'));
+                check_and_load(fig, get(fig, 'UserData'));
             case 'EpochMenu'
-                % Do nothing for now
+                check_and_load(fig, get(fig, 'UserData'));
             case 'BandMenu'
-                % Do nothing
+                check_and_load(fig, get(fig, 'UserData'));
             case 'Scroll1'
                 % Do nothing
             case 'Scroll2'
                 % Do nothing
         end
     end
-
 end
 
 function update_epoch_list(fig, ud)
@@ -159,6 +163,85 @@ function update_epoch_list(fig, ud)
 
     em = findobj(fig, 'Tag', 'EpochMenu');
     set(em, 'String', epoch_list, 'Value', 1);
+end
+
+function check_and_load(fig, ud)
+    % Check if document exists, create if not
+
+    % 1. Get Selections
+    pm = findobj(fig, 'Tag', 'ProbeMenu');
+    probe_idx = get(pm, 'Value');
+    if isempty(ud.probes) || probe_idx > numel(ud.probes)
+        return;
+    end
+    probe = ud.probes{probe_idx};
+
+    em = findobj(fig, 'Tag', 'EpochMenu');
+    epoch_strs = get(em, 'String');
+    epoch_val = get(em, 'Value');
+    if epoch_val < 1 || epoch_val > numel(epoch_strs)
+        return;
+    end
+    epoch_str = epoch_strs{epoch_val};
+
+    if strcmp(epoch_str, ' ')
+        % No epoch selected
+        return;
+    end
+
+    bm = findobj(fig, 'Tag', 'BandMenu');
+    band_strs = get(bm, 'String');
+    band_val = get(bm, 'Value');
+    band_str = band_strs{band_val};
+
+    % 2. Check Memory (UserData)
+    if isfield(ud, 'current_doc') && ~isempty(ud.current_doc)
+        try
+            doc_props = ud.current_doc.document_properties;
+            match_epoch = strcmp(doc_props.epochid.epochid, epoch_str);
+            match_band = strcmp(doc_props.pyraview.filter.band, band_str);
+            match_element = strcmp(ud.current_doc.dependency_value('element_id'), probe.id());
+
+            if match_epoch && match_band && match_element
+                disp('Using cached document from memory.');
+                return;
+            end
+        catch
+            % Structure mismatch, ignore cache
+        end
+    end
+
+    % 3. Search for Document in DB
+    session = ud.session;
+
+    q1 = ndi.query('','isa','pyraview');
+    q2 = ndi.query('','depends_on','element_id', probe.id());
+    q3 = ndi.query('epochid.epochid', 'exact_string', epoch_str);
+    q4 = ndi.query('pyraview.filter.band', 'exact_string', band_str);
+
+    q = q1 & q2 & q3 & q4;
+
+    docs = session.database_search(q);
+
+    if isempty(docs)
+        % Create it
+        disp('Document not found, creating...');
+        try
+            % Call makePyraviewDoc from package
+            doc = ndi.app.pyraview_makePyraviewDoc(probe, epoch_str, band_str);
+            disp(['Created document with id: ' doc.id()]);
+
+            ud.current_doc = doc;
+            set(fig, 'UserData', ud);
+
+        catch e
+            disp(['Error creating document: ' e.message]);
+        end
+    else
+        disp('Document found.');
+        ud.current_doc = docs{1};
+        set(fig, 'UserData', ud);
+    end
 end
 
 function on_resize(fig)
