@@ -28,7 +28,7 @@ function pyraview_doc = makePyraviewDoc(probe, epochid, filterband, options)
     end
     epoch_entry = et(match_idx);
 
-    % Check for dev_local_time
+    % Check for 'dev_local_time'
     has_dev_local_time = false;
     t0 = 0;
     t1 = 0;
@@ -68,8 +68,9 @@ function pyraview_doc = makePyraviewDoc(probe, epochid, filterband, options)
     % Initialize Progress Bar
     pb_fig = figure('Name', 'Pyraview Progress', 'NumberTitle', 'off', 'MenuBar', 'none', ...
                     'ToolBar', 'none', 'Resize', 'off', 'Position', [500 500 520 80]);
-    pb = ndi.gui.component.NDIProgressBar(struct('Parent', pb_fig, ...
-        'Message', 'Initializing...', 'Text', 'Starting data processing...'));
+    % Pass Name-Value arguments directly, NOT as a struct
+    pb = ndi.gui.component.NDIProgressBar('Parent', pb_fig, ...
+        'Message', 'Initializing...', 'Text', 'Starting data processing...');
 
     % 5. Loop and Process Chunks
     chunk_dur = options.chunkDuration;
