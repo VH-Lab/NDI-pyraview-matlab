@@ -1,7 +1,7 @@
-function pyraview_doc = pyraview_makePyraviewDoc(probe, epochid, filterband, options)
-    % PYRAVIEW_MAKEPYRAVIEWDOC - create a pyraview document for a probe and epoch
+function pyraview_doc = makePyraviewDoc(probe, epochid, filterband, options)
+    % MAKEPYRAVIEWDOC - create a pyraview document for a probe and epoch
     %
-    % PYRAVIEW_DOC = ndi.app.pyraview_makePyraviewDoc(PROBE, EPOCHID, FILTERBAND, ...)
+    % PYRAVIEW_DOC = ndi.app.makePyraviewDoc(PROBE, EPOCHID, FILTERBAND, ...)
     %
     % Inputs:
     %   PROBE: An ndi.probe object
@@ -51,7 +51,7 @@ function pyraview_doc = pyraview_makePyraviewDoc(probe, epochid, filterband, opt
     sr = probe.samplerate(epochid);
 
     % 3. Calculate Filter
-    % [b,a] = cheby1(4,0.8,300/(0.5*sr),’high’)
+    % [b,a] = cheby1(4,0.8,300/(0.5*sr),'high')
     % Check if cheby1 exists (Signal Processing Toolbox)
     if exist('cheby1', 'file') || exist('cheby1', 'builtin')
         nyquist = 0.5 * sr;
@@ -141,12 +141,27 @@ function pyraview_doc = pyraview_makePyraviewDoc(probe, epochid, filterband, opt
     % 6. Create Document
     % Create an ndi.document of type 'pyraview'
 
-    pyraview_doc = ndi.document('pyraview');
+    epochidStruct.epochid = epochid;
+    pyraview.label = filterband;
+    pyraview.nativeRate = sr;
+    pyraview.nativeStart = t0;
+    pyraview.channels = size(data_central,2);
+    pyraview.dataType = 'double';
+    pyraview.decimationLevels = steps;
+    pyraview.decimationSamplingRate = sr / cumprod(pyraview.decimationLevels);
+    pyraview.decimationStartTime = t0*ones(numel(puraview.decimationLevels,1);
+
+    filterStruct.type = filterband;
+    filterStruct.algorithm = 'chebyshev_1';
+    filterStruct.parameters = struct('sampleFrequency', sr, ...
+        'order', 4, ...
+        'filterFrequency', 300, ...
+        'passBandRipple', 0.8, ...
+        'stopbandAttentuation', NaN);
+
+    pyraview_doc = ndi.document('pyraview', 'pyraview', pyraview, ...
+      'epochid', epochidStruct, 'filter', filterStruct);
     pyraview_doc = pyraview_doc.set_dependency_value('element_id', probe.id());
-    pyraview_doc.document_properties.epochid = struct('epochid', epochid);
-    pyraview_doc.document_properties.pyraview = struct();
-    pyraview_doc.document_properties.pyraview.filter = struct('band', filterband, 'b', b, 'a', a);
-    pyraview_doc.document_properties.pyraview.path = struct('prefix', prefix);
 
     % Note: We are NOT adding it to the database as per instructions.
 end
