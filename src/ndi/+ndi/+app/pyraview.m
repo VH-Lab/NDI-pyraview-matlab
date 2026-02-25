@@ -212,7 +212,15 @@ function pyraview(app_options)
                 on_resize(fig);
                 val = get(findobj(fig, 'Tag', 'SpikingCheckbox'), 'Value');
                 if val
-                    load_spiking_neurons(fig);
+                    % Load data via external function
+                    pm = findobj(fig, 'Tag', 'ProbeMenu');
+                    probe_idx = get(pm, 'Value');
+                    if ~isempty(ud.probes) && probe_idx <= numel(ud.probes)
+                        probe = ud.probes{probe_idx};
+                        ud.spiking_info = ndi.app.pyraview.load_spiking_neurons(ud.session, probe);
+                        set(fig, 'UserData', ud);
+                        update_spiking_list_ui(fig);
+                    end
                 end
             case 'SpikingList'
                 update_spiking_plot(fig);
@@ -356,64 +364,20 @@ function check_and_load(fig)
     % Check for spiking
     cb = findobj(fig, 'Tag', 'SpikingCheckbox');
     if get(cb, 'Value')
-        load_spiking_neurons(fig);
+        ud.spiking_info = ndi.app.pyraview.load_spiking_neurons(ud.session, probe);
+        set(fig, 'UserData', ud);
+        update_spiking_list_ui(fig);
     end
 end
 
-function load_spiking_neurons(fig)
+function update_spiking_list_ui(fig)
     ud = get(fig, 'UserData');
-
-    pm = findobj(fig, 'Tag', 'ProbeMenu');
-    probe_idx = get(pm, 'Value');
-    if isempty(ud.probes) || probe_idx > numel(ud.probes)
-        return;
-    end
-    probe = ud.probes{probe_idx};
-    session = ud.session;
-
-    Q1 = ndi.query('element.type','exact_string','spikes');
-    Q2 = ndi.query('','depends_on','underlying_element_id', probe.id());
-    Q = Q1 & Q2;
-
-    docs = session.database_search(Q);
-
-    spiking_info = struct('element_obj', {}, 'neuron_doc', {}, 'label', {});
-
-    for i=1:numel(docs)
-        el_obj = ndi.database.fun.ndi_document2ndi_object(docs{i}, session);
-
-        % Find neuron document
-        Q_n = ndi.query('','isa','neuron_extracellular') & ...
-              ndi.query('','depends_on','element_id', docs{i}.id());
-        n_docs = session.database_search(Q_n);
-
-        quality = 0;
-        n_doc = [];
-        if ~isempty(n_docs)
-            n_doc = n_docs{1};
-            if isfield(n_doc.document_properties, 'neuron_extracellular')
-               if isfield(n_doc.document_properties.neuron_extracellular, 'quality_number')
-                   quality = n_doc.document_properties.neuron_extracellular.quality_number;
-               elseif isfield(n_doc.document_properties.neuron_extracellular, 'quality')
-                   quality = n_doc.document_properties.neuron_extracellular.quality;
-               end
-            end
-        end
-
-        label = sprintf('%d %s Q%d', i, el_obj.elementstring(), quality);
-
-        spiking_info(i).element_obj = el_obj;
-        spiking_info(i).neuron_doc = n_doc;
-        spiking_info(i).label = label;
-    end
-
-    ud.spiking_info = spiking_info;
-    set(fig, 'UserData', ud);
+    spiking_info = ud.spiking_info;
 
     strs = {spiking_info.label};
 
     lb = findobj(fig, 'Tag', 'SpikingList');
-    set(lb, 'String', strs, 'UserData', []); % Don't need raw IDs if we have struct
+    set(lb, 'String', strs);
     set(lb, 'Max', max(2, numel(strs))); % Allow multiple selection
     if ~isempty(strs)
         set(lb, 'Value', 1:numel(strs));
