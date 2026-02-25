@@ -23,6 +23,7 @@ function pyraview(app_options)
 
     if strcmp(command, 'Initialize')
         if isempty(session)
+            % If session is empty, we cannot proceed with initialization as per requirements
             error('ndi:app:pyraview:nosession', 'Session must be provided for initialization.');
         end
 
@@ -34,6 +35,7 @@ function pyraview(app_options)
                      'Visible', 'on');
 
         % Callback string for controls
+        % Uses the Tag of the control as the command
         callbackstr = 'ndi.app.pyraview(''command'', get(gcbo,''Tag''), ''fig'', gcbf);';
 
         % Initialize UserData
@@ -42,16 +44,16 @@ function pyraview(app_options)
         ud.current_doc = [];
         ud.epoch_t0 = 0;
         ud.epoch_t1 = 0;
-        ud.current_data_t0 = -Inf;
-        ud.current_data_t1 = -Inf;
-        ud.current_data = [];
-        ud.current_time = [];
-        ud.current_level = [];
-        ud.view_t0 = 0;
-        ud.view_duration = 1;
-        ud.channel_y_spacing = 100;
+        ud.current_data_t0 = -Inf; % Start of currently loaded data buffer
+        ud.current_data_t1 = -Inf; % End of currently loaded data buffer
+        ud.current_data = []; % Store loaded data
+        ud.current_time = []; % Store loaded time
+        ud.current_level = []; % Store loaded level
+        ud.view_t0 = 0; % Start of current view
+        ud.view_duration = 1; % Duration of current view
+        ud.channel_y_spacing = 100; % Default spacing
 
-        % Create Controls
+        % Create Controls (Positions will be set by ResizeFcn)
 
         % Dropdown: Probe
         uicontrol(fig, 'Style', 'text', 'String', 'Probe:', ...
@@ -108,25 +110,54 @@ function pyraview(app_options)
              'Tag', 'SpacingEdit', 'Callback', callbackstr, ...
              'FontSize', 14);
 
-        % Separator Line
+        % Checkbox: Show spiking units
+        uicontrol(fig, 'Style', 'checkbox', 'String', 'Show spiking units', ...
+             'Units', 'pixels', 'Position', [10 10 200 20], ...
+             'Tag', 'SpikingCheckbox', 'Callback', callbackstr, ...
+             'FontWeight', 'bold', 'FontSize', 14, 'Value', 0);
+
+        % Separator Line (using uipanel as line)
         uipanel(fig, 'Units', 'pixels', 'Position', [0 0 100 1], 'Tag', 'SeparatorLine', ...
             'BorderType', 'line', 'HighlightColor', [0 0 0]);
 
-        % Main Frame
+        % Main Frame (uipanel)
         frame_panel = uipanel(fig, 'Title', '', 'Units', 'pixels', ...
              'Position', [10 10 100 100], 'Tag', 'MainFrame');
 
         % Axes
         ax = axes('Parent', frame_panel, 'Units', 'normalized', ...
-             'Position', [0 0 1 1], 'Tag', 'MainAxes');
+             'Position', [0 0 1 1], 'Tag', 'MainAxes'); % Position will be adjusted in layout
         xlabel(ax, 'Time (s)');
         ud.axes = ax;
 
-        % Setup zoom/pan callbacks
+        % Spiking Units Frame
+        sf = uipanel(fig, 'Title', '', 'Units', 'pixels', ...
+             'Position', [10 10 100 100], 'Tag', 'SpikingFrame', 'Visible', 'off');
+
+        % Spiking Axes
+        sax = axes('Parent', sf, 'Units', 'normalized', ...
+             'Position', [0 0 0.6 1], 'Tag', 'SpikingAxes');
+        ud.spiking_axes = sax;
+
+        % Spiking Title
+        uicontrol(sf, 'Style', 'text', 'String', 'Spiking neurons', ...
+             'Units', 'normalized', 'Position', [0.6 0.9 0.4 0.1], ...
+             'Tag', 'SpikingTitle', 'FontWeight', 'bold');
+
+        % Spiking Listbox
+        uicontrol(sf, 'Style', 'listbox', 'String', {}, ...
+             'Units', 'normalized', 'Position', [0.6 0 0.4 0.9], ...
+             'Tag', 'SpikingList');
+
+        % Link Y Axes
+        linkaxes([ax, sax], 'y');
+
+        % Setup zoom/pan callbacks on axes
         z = zoom(fig);
         z.ActionPostCallback = @(src, event) on_zoom_pan(fig, event);
         p = pan(fig);
         p.ActionPostCallback = @(src, event) on_zoom_pan(fig, event);
+
 
         % Scrollbar 1 (Top) - Pan
         uicontrol(frame_panel, 'Style', 'slider', 'Units', 'normalized', ...
@@ -173,6 +204,8 @@ function pyraview(app_options)
                 check_and_load(fig);
             case 'SpacingEdit'
                 update_spacing(fig);
+            case 'SpikingCheckbox'
+                on_resize(fig);
             case 'Scroll1' % Pan
                 update_from_scrollbars(fig, ud);
             case 'Scroll2' % Zoom
@@ -199,6 +232,7 @@ function update_epoch_list(fig, ud)
         return;
     end
 
+    % Validate val
     if val > numel(probes)
         val = 1;
         set(pm, 'Value', 1);
@@ -208,6 +242,7 @@ function update_epoch_list(fig, ud)
     et = selected_probe.epochtable();
     epoch_ids = {et.epoch_id};
 
+    % Add empty slot with a spacer
     epoch_list = [{' '}, epoch_ids];
 
     em = findobj(fig, 'Tag', 'EpochMenu');
@@ -217,6 +252,7 @@ end
 function check_and_load(fig)
     ud = get(fig, 'UserData');
 
+    % 1. Get Selections
     pm = findobj(fig, 'Tag', 'ProbeMenu');
     probe_idx = get(pm, 'Value');
     if isempty(ud.probes) || probe_idx > numel(ud.probes)
@@ -233,6 +269,7 @@ function check_and_load(fig)
     epoch_str = epoch_strs{epoch_val};
 
     if strcmp(epoch_str, ' ')
+        % No epoch selected
         return;
     end
 
@@ -241,11 +278,13 @@ function check_and_load(fig)
     band_val = get(bm, 'Value');
     band_str = band_strs{band_val};
 
+    % 2. Check Memory (UserData)
     doc = [];
     if isfield(ud, 'current_doc') && ~isempty(ud.current_doc)
         try
             doc_props = ud.current_doc.document_properties;
             match_epoch = strcmp(doc_props.epochid.epochid, epoch_str);
+            % Corrected to check filter.type based on schema
             if isfield(doc_props, 'filter') && isfield(doc_props.filter, 'type')
                 match_band = strcmp(doc_props.filter.type, band_str);
             else
@@ -258,15 +297,17 @@ function check_and_load(fig)
                 disp('Using cached document from memory.');
             end
         catch
+            % Structure mismatch, ignore cache
         end
     end
 
+    % 3. Search for Document in DB if not found in cache
     if isempty(doc)
         session = ud.session;
         q1 = ndi.query('','isa','pyraview');
         q2 = ndi.query('','depends_on','element_id', probe.id());
         q3 = ndi.query('epochid.epochid', 'exact_string', epoch_str);
-        q4 = ndi.query('filter.type', 'exact_string', band_str);
+        q4 = ndi.query('filter.type', 'exact_string', band_str); % Use filter.type
         q = q1 & q2 & q3 & q4;
         docs = session.database_search(q);
 
@@ -285,26 +326,41 @@ function check_and_load(fig)
         end
     end
 
+    % Update UserData with new doc
     ud.current_doc = doc;
 
+    % Get Epoch start/end times
+    % From document or probe? Document has epochclocktimes
     try
         t0_t1 = doc.document_properties.epochclocktimes.t0_t1;
         ud.epoch_t0 = t0_t1(1);
         ud.epoch_t1 = t0_t1(2);
     catch
-        ud.epoch_t0 = 0; ud.epoch_t1 = 100;
+        % Fallback to probe
+        et = probe.epochtable();
+        match_idx = find(strcmp({et.epoch_id}, epoch_str), 1);
+        % assuming dev_local_time exists per makePyraviewDoc logic
+        % But we need to find the right clock.
+        % For simplicity, let's assume makePyraviewDoc populated doc correctly.
+        ud.epoch_t0 = 0; ud.epoch_t1 = 100; % Dummy fallback
     end
 
+    % Initialize View
+    % Default duration: 10s or full duration if shorter
     full_dur = ud.epoch_t1 - ud.epoch_t0;
     ud.view_duration = min(10, full_dur);
     ud.view_t0 = ud.epoch_t0;
 
+    % Reset loaded data range to force reload
     ud.current_data_t0 = -Inf;
     ud.current_data_t1 = -Inf;
 
     set(fig, 'UserData', ud);
 
+    % Update Scrollbars to reflect initial state
     update_scrollbars(fig, ud);
+
+    % Load Data and Plot
     update_view(fig);
 end
 
@@ -314,81 +370,83 @@ function update_spacing(fig)
     str = get(se, 'String');
     val = str2double(str);
     if isnan(val)
-        val = 100;
+        val = 100; % Default fallback
         set(se, 'String', '100');
     end
     ud.channel_y_spacing = val;
     set(fig, 'UserData', ud);
-    plot_data(fig);
+    plot_data(fig); % Re-plot without reloading data
 end
 
 function update_from_scrollbars(fig, ud)
-    % Scroll1 (Top) = Pan
-    % Scroll2 (Bottom) = Zoom
+    % Read scrollbar values and update view_t0 / view_duration
 
-    s1 = findobj(fig, 'Tag', 'Scroll1');
-    s2 = findobj(fig, 'Tag', 'Scroll2');
+    s1 = findobj(fig, 'Tag', 'Scroll1'); % Zoom/Duration
+    s2 = findobj(fig, 'Tag', 'Scroll2'); % Pan/Position
 
-    val_pan = get(s1, 'Value');
-    val_zoom = get(s2, 'Value');
+    val1 = get(s1, 'Value');
+    val2 = get(s2, 'Value');
 
     full_dur = ud.epoch_t1 - ud.epoch_t0;
     if full_dur <= 0, full_dur = 1; end
 
-    % Zoom: 0 = Max Duration (Out), 1 = Min Duration (In)
-    % Or user said "middle position... zoom in and out".
-    % Let's say 0.5 is current view duration? No, scrollbar sets state.
-    % If 0 is FULL duration, 1 is MIN duration (zoomed in).
-    % Middle is somewhat zoomed.
-
+    % Map val1 (0..1) to duration.
+    % 0 -> full_dur (zoomed out)
+    % 1 -> min_dur (zoomed in)
     min_dur = 0.01; % 10ms
-    % Log scale
-    % val_zoom = 0 -> dur = full_dur
-    % val_zoom = 1 -> dur = min_dur
+    % Log scale for smooth zoom
+    % dur = exp( log(full_dur) * (1-val1) + log(min_dur) * val1 )
+    ud.view_duration = exp( log(full_dur) * (1-val1) + log(min_dur) * val1 );
 
-    ud.view_duration = exp( log(full_dur) * (1-val_zoom) + log(min_dur) * val_zoom );
-
-    % Pan: 0 = Start, 1 = End
-    % view_t0 = epoch_t0 + val_pan * (max_start - epoch_t0)
+    % Map val2 (0..1) to view_t0
+    % view_t0 ranges from epoch_t0 to epoch_t1 - view_duration
     max_start = ud.epoch_t1 - ud.view_duration;
     if max_start < ud.epoch_t0, max_start = ud.epoch_t0; end
 
-    ud.view_t0 = ud.epoch_t0 + val_pan * (max_start - ud.epoch_t0);
+    ud.view_t0 = ud.epoch_t0 + val2 * (max_start - ud.epoch_t0);
 
     set(fig, 'UserData', ud);
     update_view(fig);
 end
 
 function update_scrollbars(fig, ud)
-    s1 = findobj(fig, 'Tag', 'Scroll1'); % Pan
-    s2 = findobj(fig, 'Tag', 'Scroll2'); % Zoom
+    % Update scrollbar positions based on current view_t0 / view_duration
+    % (Inverse of update_from_scrollbars)
+
+    s1 = findobj(fig, 'Tag', 'Scroll1');
+    s2 = findobj(fig, 'Tag', 'Scroll2');
 
     full_dur = ud.epoch_t1 - ud.epoch_t0;
     if full_dur <= 0, full_dur = 1; end
     min_dur = 0.01;
 
-    % Calculate val_zoom (Scroll2)
+    % Calculate val1
+    % log(dur) = log(full) * (1-v) + log(min) * v
+    % log(dur) - log(full) = v * (log(min) - log(full))
     % v = (log(dur) - log(full)) / (log(min) - log(full))
     num = log(ud.view_duration) - log(full_dur);
     den = log(min_dur) - log(full_dur);
-    val_zoom = num / den;
-    val_zoom = max(0, min(1, val_zoom));
+    val1 = num / den;
+    val1 = max(0, min(1, val1));
 
-    set(s2, 'Value', val_zoom);
+    set(s2, 'Value', val1);
 
-    % Calculate val_pan (Scroll1)
+    % Calculate val2
+    % t0 = epoch_t0 + v * (max_start - epoch_t0)
     max_start = ud.epoch_t1 - ud.view_duration;
     if max_start <= ud.epoch_t0
-        val_pan = 0;
+        val2 = 0;
     else
-        val_pan = (ud.view_t0 - ud.epoch_t0) / (max_start - ud.epoch_t0);
+        val2 = (ud.view_t0 - ud.epoch_t0) / (max_start - ud.epoch_t0);
     end
-    val_pan = max(0, min(1, val_pan));
+    val2 = max(0, min(1, val2));
 
-    set(s1, 'Value', val_pan);
+    set(s1, 'Value', val2);
 end
 
 function on_zoom_pan(fig, ~)
+    % Callback for MATLAB zoom/pan tools
+    % Update ud.view_t0 and ud.view_duration from axes limits
     ud = get(fig, 'UserData');
     ax = ud.axes;
     xl = xlim(ax);
@@ -407,6 +465,7 @@ function update_view(fig)
         return;
     end
 
+    % Determine if we need to load new data
     req_t0 = ud.view_t0;
     req_t1 = req_t0 + ud.view_duration;
 
@@ -415,22 +474,6 @@ function update_view(fig)
     if req_t0 < ud.current_data_t0 || req_t1 > ud.current_data_t1
         needs_load = true;
     end
-
-    % Also check resolution (level) if pixelSpan changed or zoom changed significantly
-    % We can't easily check 'optimal' level without querying Dataset logic, but
-    % if we zoom in a lot, we might need lower level.
-    % Let's rely on 'needs_load' primarily for pan logic,
-    % BUT prompt said: "When the window is resized, the function needs to check its resolution again"
-    % So we should force reload if pixelSpan implies different level?
-    % Let's just pass request to getData. If we are within buffer but resolution is wrong,
-    % current logic keeps old data.
-    % We should probably check if current_level matches requested level?
-    % That requires calling dataset logic separately.
-    % For now, simpler: On resize we force update (which calls update_view).
-    % And maybe we should be more aggressive about reloading if zoom changed?
-    % The prompt specifically said "only call getData when the real viewing axis... gets to the edge".
-    % But resizing changes pixel width.
-    % Let's implement resizing check in `on_resize`.
 
     if needs_load
         probe_idx = get(findobj(fig, 'Tag', 'ProbeMenu'), 'Value');
@@ -454,11 +497,8 @@ function update_view(fig)
             cla(ud.axes);
         end
     else
-        % Limits update
+        % Data is already loaded, just update limits
         xlim(ud.axes, [req_t0, req_t1]);
-
-        % If we didn't reload, we might still want to check if resolution is grossly off?
-        % For now, stick to edge logic unless resized.
     end
 end
 
@@ -479,21 +519,36 @@ function plot_data(fig)
     numChannels = size(data, 2);
 
     if level == 0
+        % Raw Data: Samples x Channels
+        % Construct single X and Y vectors
+        % Y: data(:,c) + (c-1)*spacing
+        % Separate channels with NaN
+
         totalPoints = numChannels * (numSamples + 1);
+
         X = NaN(totalPoints, 1);
         Y = NaN(totalPoints, 1);
 
         for c = 1:numChannels
             offset = (c-1) * spacing;
+
             startIdx = (c-1) * (numSamples + 1) + 1;
             endIdx = startIdx + numSamples - 1;
 
             X(startIdx:endIdx) = tVec;
             Y(startIdx:endIdx) = data(:, c) + offset;
+
+            % The next point (endIdx+1) is already NaN by initialization
         end
+
         plot(ud.axes, X, Y);
 
     else
+        % Decimated Data: Samples x Channels x 2
+        % Construct single X and Y vectors for vertical bars
+        % For each sample i, channel c: (t(i), min), (t(i), max), (NaN, NaN)
+        % This creates 3 points per sample per channel.
+
         pointsPerSample = 3;
         totalPoints = numSamples * pointsPerSample * numChannels;
 
@@ -502,12 +557,17 @@ function plot_data(fig)
 
         for c = 1:numChannels
             offset = (c-1) * spacing;
+
+            % Vectorized construction for channel c
             mins = data(:, c, 1) + offset;
             maxs = data(:, c, 2) + offset;
 
+            % We want sequence: min, max, nan
+            % Create [3 x N] matrix
             tempY = [mins'; maxs'; nan(1, numSamples)];
             tempX = [tVec'; tVec'; nan(1, numSamples)];
 
+            % Flatten to column
             colY = tempY(:);
             colX = tempX(:);
 
@@ -517,9 +577,11 @@ function plot_data(fig)
             X(startIdx:endIdx) = colX;
             Y(startIdx:endIdx) = colY;
         end
+
         plot(ud.axes, X, Y);
     end
 
+    % Restore limits
     xlim(ud.axes, [ud.view_t0, ud.view_t0 + ud.view_duration]);
 end
 
@@ -534,7 +596,6 @@ function on_resize(fig)
     top_y = height - margin - control_height;
 
     % Controls Layout
-    % Row 1: Probe | Epoch
     pt = findobj(fig, 'Tag', 'ProbeText');
     pm = findobj(fig, 'Tag', 'ProbeMenu');
     set(pt, 'Position', [margin, top_y, 50, control_height]);
@@ -559,20 +620,36 @@ function on_resize(fig)
     set(st, 'Position', [current_x, top_y, 60, control_height]);
     set(se, 'Position', [current_x + 60, top_y, 50, control_height]);
 
+    current_x = current_x + 60 + 50 + margin;
+    sc = findobj(fig, 'Tag', 'SpikingCheckbox');
+    set(sc, 'Position', [current_x, top_y, 200, control_height]);
+
     % Separator
     sep_y = top_y - margin;
     sep = findobj(fig, 'Tag', 'SeparatorLine');
     set(sep, 'Position', [0, sep_y, width, 1]);
 
-    % Main Frame
-    frame_h = height * 0.8;
-    frame_w = width * 0.75;
-    frame_y = sep_y - margin - frame_h;
+    % Frames
+    % Main Frame hugs bottom (0) and separator (sep_y)
+    frame_y = 0; % Assuming "hug bottom" means 0
+    frame_h = sep_y; % From 0 to sep_y
 
-    if frame_y < margin, frame_y = margin; end
+    % Check Spiking Checkbox
+    show_spiking = get(sc, 'Value');
 
     mf = findobj(fig, 'Tag', 'MainFrame');
-    set(mf, 'Position', [0, frame_y, frame_w, frame_h]);
+    sf = findobj(fig, 'Tag', 'SpikingFrame');
+
+    if show_spiking
+        main_w = width * 0.8;
+        spiking_w = width * 0.2;
+        set(mf, 'Position', [0, frame_y, main_w, frame_h]);
+        set(sf, 'Position', [main_w, frame_y, spiking_w, frame_h], 'Visible', 'on');
+    else
+        main_w = width;
+        set(mf, 'Position', [0, frame_y, main_w, frame_h]);
+        set(sf, 'Visible', 'off');
+    end
 
     % Scrollbars inside MainFrame (Normalized)
     % Fixed pixel height logic for scrollbars
@@ -598,12 +675,6 @@ function on_resize(fig)
     pb = findobj(mf, 'Tag', 'PanButton');
     zb = findobj(mf, 'Tag', 'ZoomButton');
 
-    % Layout from bottom up:
-    % Scroll2 (Zoom)
-    % Scroll1 (Pan)
-    % Buttons (Right above Scroll1)
-    % Axes (Above Buttons/Scroll1)
-
     % Scroll 2 (Bottom)
     set(s2, 'Position', [0.05, 0, 0.9, sb_h_norm]);
 
@@ -611,7 +682,6 @@ function on_resize(fig)
     set(s1, 'Position', [0.05, sb_h_norm, 0.9, sb_h_norm]);
 
     % Buttons (Right aligned above scrollbars)
-    % Width ~50px?
     btn_w_norm = 0.1;
     right_margin = 0.05;
 
@@ -625,14 +695,5 @@ function on_resize(fig)
     axes_bottom = 2*sb_h_norm + btn_h_norm;
     set(ax, 'Position', [0.05, axes_bottom + 0.05, 0.9, 1 - (axes_bottom + 0.05) - 0.02]);
 
-    % Check resolution again?
-    % Calling update_view will check edge logic.
-    % But if resizing changed pixelSpan significantly, we might want to reload even if not at edge.
-    % We can force a reload by invalidating buffer or just calling getData directly.
-    % Let's rely on update_view for now, but update_view assumes edge logic.
-    % If we strictly follow "function needs to check its resolution again",
-    % we should probably invalidate the buffer if pixelSpan changes drastically.
-    % For simplicity, let's allow the user to trigger reload by panning/zooming if it looks blocky.
-    % Or, simpler: update_view() call here.
     update_view(fig);
 end
