@@ -225,15 +225,26 @@ function pyraview(app_options)
                     % Load data via external function
                     pm = findobj(fig, 'Tag', 'ProbeMenu');
                     probe_idx = get(pm, 'Value');
-                    if ~isempty(ud.probes) && probe_idx <= numel(ud.probes)
+
+                    % Get epochid
+                    em = findobj(fig, 'Tag', 'EpochMenu');
+                    epoch_strs = get(em, 'String');
+                    epoch_val = get(em, 'Value');
+                    epoch_str = '';
+                    if ~isempty(epoch_strs) && epoch_val <= numel(epoch_strs)
+                        epoch_str = epoch_strs{epoch_val};
+                    end
+
+                    if ~isempty(ud.probes) && probe_idx <= numel(ud.probes) && ~strcmp(epoch_str, ' ')
                         probe = ud.probes{probe_idx};
-                        ud.spiking_info = ndi.app.pyraview.load_spiking_neurons(ud.session, probe);
+                        ud.spiking_info = ndi.app.pyraview.load_spiking_neurons(ud.session, probe, epoch_str);
                         set(fig, 'UserData', ud);
                         update_spiking_list_ui(fig);
                     end
                 end
             case 'SpikingList'
                 update_spiking_plot(fig);
+                plot_data(fig); % Re-plot main axes to show spikes overlay
             case 'Scroll1' % Pan
                 update_from_scrollbars(fig, ud);
             case 'Scroll2' % Zoom
@@ -410,7 +421,7 @@ function check_and_load(fig)
     % Check for spiking
     cb = findobj(fig, 'Tag', 'SpikingCheckbox');
     if get(cb, 'Value')
-        ud.spiking_info = ndi.app.pyraview.load_spiking_neurons(ud.session, probe);
+        ud.spiking_info = ndi.app.pyraview.load_spiking_neurons(ud.session, probe, epoch_str);
         set(fig, 'UserData', ud);
         update_spiking_list_ui(fig);
     end
@@ -432,6 +443,7 @@ function update_spiking_list_ui(fig)
     end
 
     update_spiking_plot(fig);
+    plot_data(fig); % Update main plot to include spikes
 end
 
 function update_spiking_plot(fig)
@@ -705,6 +717,20 @@ function plot_data(fig)
     [X, Y] = ndi.app.pyraview.transformPlotData(data, tVec, level, spacing);
 
     plot(ud.axes, X, Y);
+    hold(ud.axes, 'on');
+
+    % Plot Spikes if available
+    lb = findobj(fig, 'Tag', 'SpikingList');
+    if ~isempty(lb) && ~isempty(ud.spiking_info)
+        selectedIdx = get(lb, 'Value');
+        if ~isempty(selectedIdx)
+            [sX, sY] = ndi.app.pyraview.transformSpikeData(ud.spiking_info, selectedIdx, ud.view_t0, ud.view_t0 + ud.view_duration, spacing);
+            if ~isempty(sX)
+                plot(ud.axes, sX, sY, 'r'); % Plot spikes in red
+            end
+        end
+    end
+    hold(ud.axes, 'off');
 
     % Restore X limits
     xlim(ud.axes, [ud.view_t0, ud.view_t0 + ud.view_duration]);
