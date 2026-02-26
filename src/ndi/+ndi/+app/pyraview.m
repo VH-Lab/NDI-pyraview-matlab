@@ -58,6 +58,7 @@ function pyraview(app_options)
         ud.first_plot = true; % Flag for first plot
         ud.split_position = 0.8; % Default split position (80% for Main)
         ud.dragging = false;
+        ud.last_mode = ''; % Store mode before drag
 
         % Create Controls (Positions will be set by ResizeFcn)
 
@@ -278,6 +279,20 @@ function start_drag(src, ~)
     fig = ancestor(src, 'figure');
     ud = get(fig, 'UserData');
     ud.dragging = true;
+
+    % Disable Pan/Zoom temporarily to allow drag
+    p = pan(fig);
+    z = zoom(fig);
+
+    ud.last_mode = '';
+    if strcmp(p.Enable, 'on')
+        ud.last_mode = 'pan';
+        pan(fig, 'off');
+    elseif strcmp(z.Enable, 'on')
+        ud.last_mode = 'zoom';
+        zoom(fig, 'off');
+    end
+
     set(fig, 'UserData', ud);
     set(fig, 'WindowButtonMotionFcn', @(s,e) drag_split(s,e));
     set(fig, 'WindowButtonUpFcn', @(s,e) stop_drag(s,e));
@@ -305,6 +320,14 @@ end
 function stop_drag(fig, ~)
     ud = get(fig, 'UserData');
     ud.dragging = false;
+
+    % Restore mode
+    if strcmp(ud.last_mode, 'pan')
+        pan(fig, 'on');
+    elseif strcmp(ud.last_mode, 'zoom')
+        zoom(fig, 'on');
+    end
+
     set(fig, 'UserData', ud);
     set(fig, 'WindowButtonMotionFcn', '');
     set(fig, 'WindowButtonUpFcn', '');
@@ -729,12 +752,9 @@ function plot_data(fig)
     numChannels = size(data, 2);
     try
         mapping = ndi.app.pyraview.mappings(1:numChannels, mapping_name);
-        % Apply mapping to data
-        % data is Samples x Channels or Samples x Channels x 2
-        data = data(:, mapping, :);
     catch e
         warning('Mapping error: %s', e.message);
-        % fallback to raw?
+        mapping = [];
     end
 
     % Store previous YLim if not first plot
@@ -744,7 +764,8 @@ function plot_data(fig)
         yl_old = [];
     end
 
-    [X, Y] = ndi.app.pyraview.transformPlotData(data, tVec, level, spacing);
+    % Pass mapping to transform function
+    [X, Y] = ndi.app.pyraview.transformPlotData(data, tVec, level, spacing, mapping);
 
     plot(ud.axes, X, Y);
     hold(ud.axes, 'on');

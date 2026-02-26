@@ -1,13 +1,14 @@
-function [X, Y] = transformPlotData(data, tVec, level, spacing)
+function [X, Y] = transformPlotData(data, tVec, level, spacing, mapping)
 % TRANSFORM_PLOT_DATA - Prepare data for efficient multi-channel plotting
 %
-%   [X, Y] = ndi.app.pyraview.transformPlotData(DATA, TVEC, LEVEL, SPACING)
+%   [X, Y] = ndi.app.pyraview.transformPlotData(DATA, TVEC, LEVEL, SPACING, MAPPING)
 %
 %   Inputs:
 %       DATA    - Data matrix (Samples x Channels) or (Samples x Channels x 2).
 %       TVEC    - Time vector (Samples x 1).
 %       LEVEL   - Decimation level (0 for raw, >0 for decimated).
 %       SPACING - Vertical spacing between channels.
+%       MAPPING - (Optional) Channel mapping vector.
 %
 %   Outputs:
 %       X       - X-coordinates for plotting (single vector with NaNs).
@@ -19,12 +20,22 @@ function [X, Y] = transformPlotData(data, tVec, level, spacing)
         tVec (:,1) double
         level (1,1) double
         spacing (1,1) double
+        mapping (1,:) double = []
     end
 
     if isempty(data)
         X = [];
         Y = [];
         return;
+    end
+
+    % Apply mapping if provided
+    if ~isempty(mapping)
+        try
+            data = data(:, mapping, :);
+        catch
+            warning('Failed to apply mapping in transformPlotData. Using raw channel order.');
+        end
     end
 
     numSamples = size(data, 1);
