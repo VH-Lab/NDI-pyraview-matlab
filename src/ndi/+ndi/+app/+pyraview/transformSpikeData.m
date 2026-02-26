@@ -51,8 +51,7 @@ function [X, Y] = transformSpikeData(spiking_info, selectedIdx, t0, t1, spacing)
         if isempty(times), continue; end
 
         % Filter times within view
-        valid_mask = times >= t0 & times <= t1;
-        t_plot = times(valid_mask);
+        t_plot = times;
 
         if isempty(t_plot), continue; end
 
