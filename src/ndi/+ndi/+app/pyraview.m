@@ -339,17 +339,18 @@ end
 function stop_drag(fig, ~)
     ud = get(fig, 'UserData');
     ud.dragging = false;
+    set(fig, 'UserData', ud);
 
-    % Restore mode
+    % Clear callbacks FIRST
+    set(fig, 'WindowButtonMotionFcn', '');
+    set(fig, 'WindowButtonUpFcn', '');
+
+    % Restore mode SECOND
     if strcmp(ud.last_mode, 'pan')
         pan(fig, 'on');
     elseif strcmp(ud.last_mode, 'zoom')
         zoom(fig, 'on');
     end
-
-    set(fig, 'UserData', ud);
-    set(fig, 'WindowButtonMotionFcn', '');
-    set(fig, 'WindowButtonUpFcn', '');
 end
 
 function update_epoch_list(fig, ud)
@@ -476,24 +477,7 @@ function check_and_load(fig)
     % Check for spiking
     cb = findobj(fig, 'Tag', 'SpikingCheckbox');
     if get(cb, 'Value')
-        % Load and process colors
-        spiking_info = ndi.app.pyraview.load_spiking_neurons(ud.session, probe, epoch_str);
-
-        if ~isempty(spiking_info)
-            best_channels = [spiking_info.best_channel];
-            unique_channels = unique(best_channels);
-            color_cycle = {'k', 'm', 'b', 'g', [1 0.5 0], 'r'};
-
-            for c = unique_channels
-                idxs = find(best_channels == c);
-                for k = 1:numel(idxs)
-                    color_idx = mod(k-1, numel(color_cycle)) + 1;
-                    spiking_info(idxs(k)).color = color_cycle{color_idx};
-                end
-            end
-        end
-
-        ud.spiking_info = spiking_info;
+        ud.spiking_info = ndi.app.pyraview.load_spiking_neurons(ud.session, probe, epoch_str);
         set(fig, 'UserData', ud);
         update_spiking_list_ui(fig);
     end
@@ -802,6 +786,7 @@ function plot_data(fig)
         yl_old = [];
     end
 
+    % Pass mapping to transform function
     [X, Y] = ndi.app.pyraview.transformPlotData(data, tVec, level, spacing, mapping);
 
     plot(ud.axes, X, Y);
