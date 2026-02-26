@@ -54,7 +54,7 @@ function pyraview(app_options)
         ud.view_t0 = 0; % Start of current view
         ud.view_duration = 1; % Duration of current view
         ud.channel_y_spacing = 100; % Default spacing
-        ud.spiking_info = struct('element_obj', {}, 'neuron_doc', {}, 'label', {}); % Store spiking info
+        ud.spiking_info = struct('element_obj', {}, 'neuron_doc', {}, 'label', {}, 'color', {}); % Store spiking info
         ud.first_plot = true; % Flag for first plot
         ud.split_position = 0.8; % Default split position (80% for Main)
         ud.dragging = false;
@@ -251,7 +251,26 @@ function pyraview(app_options)
 
                     if ~isempty(ud.probes) && probe_idx <= numel(ud.probes) && ~strcmp(epoch_str, ' ')
                         probe = ud.probes{probe_idx};
-                        ud.spiking_info = ndi.app.pyraview.load_spiking_neurons(ud.session, probe, epoch_str);
+
+                        % Load and process colors
+                        spiking_info = ndi.app.pyraview.load_spiking_neurons(ud.session, probe, epoch_str);
+
+                        % Assign Colors Grouped by Best Channel
+                        if ~isempty(spiking_info)
+                            best_channels = [spiking_info.best_channel];
+                            unique_channels = unique(best_channels);
+                            color_cycle = {'k', 'm', 'b', 'g', [1 0.5 0], 'r'};
+
+                            for c = unique_channels
+                                idxs = find(best_channels == c);
+                                for k = 1:numel(idxs)
+                                    color_idx = mod(k-1, numel(color_cycle)) + 1;
+                                    spiking_info(idxs(k)).color = color_cycle{color_idx};
+                                end
+                            end
+                        end
+
+                        ud.spiking_info = spiking_info;
                         set(fig, 'UserData', ud);
                         update_spiking_list_ui(fig);
                     end
@@ -457,7 +476,24 @@ function check_and_load(fig)
     % Check for spiking
     cb = findobj(fig, 'Tag', 'SpikingCheckbox');
     if get(cb, 'Value')
-        ud.spiking_info = ndi.app.pyraview.load_spiking_neurons(ud.session, probe, epoch_str);
+        % Load and process colors
+        spiking_info = ndi.app.pyraview.load_spiking_neurons(ud.session, probe, epoch_str);
+
+        if ~isempty(spiking_info)
+            best_channels = [spiking_info.best_channel];
+            unique_channels = unique(best_channels);
+            color_cycle = {'k', 'm', 'b', 'g', [1 0.5 0], 'r'};
+
+            for c = unique_channels
+                idxs = find(best_channels == c);
+                for k = 1:numel(idxs)
+                    color_idx = mod(k-1, numel(color_cycle)) + 1;
+                    spiking_info(idxs(k)).color = color_cycle{color_idx};
+                end
+            end
+        end
+
+        ud.spiking_info = spiking_info;
         set(fig, 'UserData', ud);
         update_spiking_list_ui(fig);
     end
@@ -524,18 +560,22 @@ function update_spiking_plot(fig)
         t = linspace(0.25, 0.75, numSamples)';
         t_shifted = (k-1) + t;
 
+        color = 'k';
+        if isfield(info, 'color') && ~isempty(info.color)
+            color = info.color;
+        end
+
         % Plot channels stacked
         for c = 1:numChannels
             offset = (c-1) * spacing;
 
-            % Insert into X, Y with NaNs
-            if isempty(X)
-                X = t_shifted;
-                Y = waveform(:,c) + offset;
-            else
-                X = [X; NaN; t_shifted];
-                Y = [Y; NaN; waveform(:,c) + offset];
-            end
+            % Plot directly to avoid huge array for colors
+            % Optimization: Plot each neuron separately in side panel is fine
+            % But user asked for color grouping
+            % Side panel usually handles individual plots ok since N is small
+
+            plot(sax, t_shifted, waveform(:,c) + offset, 'Color', color);
+            hold(sax, 'on');
         end
 
         % Labels
@@ -546,8 +586,6 @@ function update_spiking_plot(fig)
         text_labels(end).str = label_idx;
     end
 
-    plot(sax, X, Y, 'k');
-    hold(sax, 'on');
     for t = 1:numel(text_labels)
         text(sax, text_labels(t).x, text_labels(t).y_top, text_labels(t).str, 'HorizontalAlignment', 'center');
         text(sax, text_labels(t).x, text_labels(t).y_bot, text_labels(t).str, 'HorizontalAlignment', 'center');
@@ -764,7 +802,6 @@ function plot_data(fig)
         yl_old = [];
     end
 
-    % Pass mapping to transform function
     [X, Y] = ndi.app.pyraview.transformPlotData(data, tVec, level, spacing, mapping);
 
     plot(ud.axes, X, Y);
@@ -775,9 +812,54 @@ function plot_data(fig)
     if ~isempty(lb) && ~isempty(ud.spiking_info)
         selectedIdx = get(lb, 'Value');
         if ~isempty(selectedIdx)
-            [sX, sY] = ndi.app.pyraview.transformSpikeData(ud.spiking_info, selectedIdx, ud.view_t0, ud.view_t0 + ud.view_duration, spacing);
-            if ~isempty(sX)
-                plot(ud.axes, sX, sY, 'r'); % Plot spikes in red
+            % Group by Color
+            % Extract colors for selected indices
+            % Since color is string or array, tricky to use 'unique' directly if mixed
+            % But we used standard set.
+            % Map color to string key for grouping
+
+            groups = containers.Map();
+
+            for idx = selectedIdx
+                if idx > numel(ud.spiking_info), continue; end
+                info = ud.spiking_info(idx);
+
+                col = 'k';
+                if isfield(info, 'color') && ~isempty(info.color)
+                    col = info.color;
+                end
+
+                % Convert to key
+                if ischar(col)
+                    key = col;
+                else
+                    key = mat2str(col);
+                end
+
+                if ~isKey(groups, key)
+                    groups(key) = idx;
+                else
+                    groups(key) = [groups(key), idx];
+                end
+            end
+
+            keys = groups.keys;
+            for i = 1:numel(keys)
+                key = keys{i};
+                idxs = groups(key);
+
+                % Recover color from key or first item
+                % Simplest: use key if char, else eval
+                if key(1) == '['
+                    col = eval(key);
+                else
+                    col = key;
+                end
+
+                [sX, sY] = ndi.app.pyraview.transformSpikeData(ud.spiking_info, idxs, ud.view_t0, ud.view_t0 + ud.view_duration, spacing);
+                if ~isempty(sX)
+                    plot(ud.axes, sX, sY, 'Color', col);
+                end
             end
         end
     end

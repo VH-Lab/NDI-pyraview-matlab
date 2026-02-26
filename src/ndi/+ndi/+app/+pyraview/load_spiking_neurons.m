@@ -15,7 +15,7 @@ function spiking_info = load_spiking_neurons(session, probe, epochid)
 %                      'neuron_doc'  : The associated neuron_extracellular document
 %                      'label'       : Display label
 %                      'spike_times' : Vector of spike times
-%                      'center_of_mass': Scalar channel index of CoM
+%                      'best_channel': Scalar channel index of max energy
 %
 
     arguments
@@ -25,7 +25,7 @@ function spiking_info = load_spiking_neurons(session, probe, epochid)
     end
 
     spiking_info = struct('element_obj', {}, 'element_doc', {}, 'neuron_doc', {}, ...
-                          'label', {}, 'spike_times', {}, 'center_of_mass', {});
+                          'label', {}, 'spike_times', {}, 'best_channel', {});
 
     % 1. Find all spike elements for this probe
     Q1 = ndi.query('element.type', 'exact_string', 'spikes');
@@ -76,7 +76,7 @@ function spiking_info = load_spiking_neurons(session, probe, epochid)
         end
 
         quality = 0;
-        com = 1; % Default Center of Mass
+        best_ch = 1; % Default
 
         if ~isempty(n_doc)
             % Extract Quality
@@ -87,15 +87,14 @@ function spiking_info = load_spiking_neurons(session, probe, epochid)
                    quality = n_doc.document_properties.neuron_extracellular.quality;
                end
 
-               % Calculate Center of Mass
+               % Calculate Best Channel (Max Energy)
                if isfield(n_doc.document_properties.neuron_extracellular, 'mean_waveform')
                    w = n_doc.document_properties.neuron_extracellular.mean_waveform;
                    % w is Samples x Channels
                    % Energy E = sum(w.^2, 1) -> 1 x Channels
                    E = sum(w.^2, 1);
-                   if sum(E) > 0
-                       channels = 1:numel(E);
-                       com = sum(E .* channels) / sum(E);
+                   if ~isempty(E)
+                       [~, best_ch] = max(E);
                    end
                end
             end
@@ -116,6 +115,6 @@ function spiking_info = load_spiking_neurons(session, probe, epochid)
         spiking_info(i).neuron_doc = n_doc;
         spiking_info(i).label = label;
         spiking_info(i).spike_times = spike_times;
-        spiking_info(i).center_of_mass = com;
+        spiking_info(i).best_channel = best_ch;
     end
 end
