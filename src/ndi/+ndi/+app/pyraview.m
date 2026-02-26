@@ -257,16 +257,11 @@ function pyraview(app_options)
 
                         % Assign Colors Grouped by Best Channel
                         if ~isempty(spiking_info)
-                            best_channels = [spiking_info.best_channel];
-                            unique_channels = unique(best_channels);
                             color_cycle = {'k', 'm', 'b', 'g', [1 0.5 0], 'r'};
 
-                            for c = unique_channels
-                                idxs = find(best_channels == c);
-                                for k = 1:numel(idxs)
-                                    color_idx = mod(k-1, numel(color_cycle)) + 1;
-                                    spiking_info(idxs(k)).color = color_cycle{color_idx};
-                                end
+                            for k = 1:numel(spiking_info)
+                                color_idx = mod(k-1, numel(color_cycle)) + 1;
+                                spiking_info(k).color = color_cycle{color_idx};
                             end
                         end
 
@@ -541,8 +536,8 @@ function update_spiking_plot(fig)
 
         % Normalize X to 0..1 for this neuron slot k
         % k corresponds to x-range [k-1+0.25, k-1+0.75]
-        t = linspace(0.25, 0.75, numSamples)';
-        t_shifted = (k-1) + t;
+        t = linspace(-0.25, 0.25, numSamples)';
+        t_shifted = idx + t;
 
         color = 'k';
         if isfield(info, 'color') && ~isempty(info.color)
@@ -564,7 +559,7 @@ function update_spiking_plot(fig)
 
         % Labels
         label_idx = num2str(idx);
-        text_labels(end+1).x = k-0.5;
+        text_labels(end+1).x = idx;
         text_labels(end).y_top = (numChannels+0.5)*spacing;
         text_labels(end).y_bot = -0.5*spacing;
         text_labels(end).str = label_idx;
@@ -576,7 +571,7 @@ function update_spiking_plot(fig)
     end
     hold(sax, 'off');
 
-    xlim(sax, [0, numel(selectedIdx)]);
+    xlim(sax, [0, max(numel(spiking_info), 1) + 1]);
 end
 
 function update_spacing(fig)
@@ -843,7 +838,7 @@ function plot_data(fig)
 
                 [sX, sY] = ndi.app.pyraview.transformSpikeData(ud.spiking_info, idxs, ud.view_t0, ud.view_t0 + ud.view_duration, spacing);
                 if ~isempty(sX)
-                    plot(ud.axes, sX, sY, 'Color', col);
+                    plot(ud.axes, sX, sY, 'Color', col, 'LineWidth', 2);
                 end
             end
         end
