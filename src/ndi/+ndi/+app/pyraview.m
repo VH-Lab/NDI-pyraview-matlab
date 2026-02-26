@@ -116,6 +116,17 @@ function pyraview(app_options)
              'Tag', 'SpacingEdit', 'Callback', callbackstr, ...
              'FontSize', 14);
 
+        % Mapping
+        uicontrol(fig, 'Style', 'text', 'String', 'Mapping:', ...
+             'Units', 'pixels', 'Position', [10 10 60 20], ...
+             'HorizontalAlignment', 'left', 'Tag', 'MappingText', ...
+             'FontWeight', 'bold', 'FontSize', 14);
+
+        uicontrol(fig, 'Style', 'popupmenu', 'String', {'raw', 'PlexonSV'}, ...
+             'Units', 'pixels', 'Position', [10 10 100 20], ...
+             'Tag', 'MappingMenu', 'Callback', callbackstr, 'Value', 1, ...
+             'FontSize', 14);
+
         % Checkbox: Show spiking units
         uicontrol(fig, 'Style', 'checkbox', 'String', 'Show spiking units', ...
              'Units', 'pixels', 'Position', [10 10 200 20], ...
@@ -186,7 +197,6 @@ function pyraview(app_options)
              'Min', 0, 'Max', 1, 'Value', 0.5, 'SliderStep', [0.01, 0.1]);
 
         % Toggle Buttons: Pan / Zoom
-        % Use 'normalized' units here as requested
         uicontrol(frame_panel, 'Style', 'togglebutton', 'String', 'Pan', ...
              'Units', 'normalized', 'Position', [0.8 0.05 0.1 0.05], ...
              'Tag', 'PanButton', 'Callback', callbackstr, 'Value', 1); % Default Pan
@@ -219,6 +229,8 @@ function pyraview(app_options)
                 check_and_load(fig);
             case 'SpacingEdit'
                 update_spacing(fig);
+            case 'MappingMenu'
+                plot_data(fig);
             case 'SpikingCheckbox'
                 on_resize(fig);
                 val = get(findobj(fig, 'Tag', 'SpikingCheckbox'), 'Value');
@@ -708,6 +720,23 @@ function plot_data(fig)
         return;
     end
 
+    % Get Mapping
+    mm = findobj(fig, 'Tag', 'MappingMenu');
+    maps = get(mm, 'String');
+    map_val = get(mm, 'Value');
+    mapping_name = maps{map_val};
+
+    numChannels = size(data, 2);
+    try
+        mapping = ndi.app.pyraview.mappings(1:numChannels, mapping_name);
+        % Apply mapping to data
+        % data is Samples x Channels or Samples x Channels x 2
+        data = data(:, mapping, :);
+    catch e
+        warning('Mapping error: %s', e.message);
+        % fallback to raw?
+    end
+
     % Store previous YLim if not first plot
     if ~ud.first_plot
         yl_old = ylim(ud.axes);
@@ -781,6 +810,12 @@ function on_resize(fig)
     set(se, 'Position', [current_x + 60, top_y, 50, control_height]);
 
     current_x = current_x + 60 + 50 + margin;
+    mt = findobj(fig, 'Tag', 'MappingText');
+    mm = findobj(fig, 'Tag', 'MappingMenu');
+    set(mt, 'Position', [current_x, top_y, 60, control_height]);
+    set(mm, 'Position', [current_x + 60, top_y, 100, control_height]);
+
+    current_x = current_x + 60 + 100 + margin;
     sc = findobj(fig, 'Tag', 'SpikingCheckbox');
     set(sc, 'Position', [current_x, top_y, 200, control_height]);
 
