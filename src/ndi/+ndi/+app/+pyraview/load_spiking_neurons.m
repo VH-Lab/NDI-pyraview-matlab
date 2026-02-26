@@ -40,8 +40,23 @@ function spiking_info = load_spiking_neurons(session, probe, epochid)
     Q_neuron = ndi.query('', 'isa', 'neuron_extracellular');
     all_neuron_docs = session.database_search(Q_neuron);
 
+    % Initialize Progress Bar
+    pb_fig = figure('Name', 'Loading Spiking Neurons', 'NumberTitle', 'off', 'MenuBar', 'none', ...
+                    'ToolBar', 'none', 'Resize', 'off', 'Position', [500 500 520 80]);
+    pb = ndi.gui.component.NDIProgressBar('Parent', pb_fig, ...
+        'Message', 'Loading...', 'Text', 'Initializing...');
+
+    cleanupObj = onCleanup(@() delete(pb_fig));
+
     % 3. Match elements to neurons
-    for i = 1:numel(element_docs)
+    num_elements = numel(element_docs);
+    for i = 1:num_elements
+        % Update Progress
+        progress = i / num_elements;
+        pb.Value = progress;
+        pb.Message = sprintf('Loading neuron %d of %d...', i, num_elements);
+        drawnow;
+
         el_doc = element_docs{i};
         el_id = el_doc.id();
 
@@ -89,7 +104,6 @@ function spiking_info = load_spiking_neurons(session, probe, epochid)
         % Read Spike Times
         try
             [d, t] = el_obj.readtimeseries(epochid, -Inf, Inf);
-            % d is usually spike waveforms or indices, t is times
             spike_times = t;
         catch
             spike_times = [];
