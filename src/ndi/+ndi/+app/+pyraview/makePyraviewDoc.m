@@ -28,7 +28,7 @@ function pyraview_doc = makePyraviewDoc(probe, epochid, filterband, options)
     end
     epoch_entry = et(match_idx);
 
-    % Check for dev_local_time
+    % Check for 'dev_local_time'
     has_dev_local_time = false;
     t0 = 0;
     t1 = 0;
@@ -50,27 +50,10 @@ function pyraview_doc = makePyraviewDoc(probe, epochid, filterband, options)
     % 2. Get Sampling Rate
     sr = probe.samplerate(epochid);
 
-    % 3. Calculate Filter
-    % [b,a] = cheby1(4,0.8,300/(0.5*sr),'high')
-    % Check if cheby1 exists (Signal Processing Toolbox)
-    if exist('cheby1', 'file') || exist('cheby1', 'builtin')
-        nyquist = 0.5 * sr;
-        cutoff = 300 / nyquist;
-
-        if cutoff >= 1
-            warning('Filter cutoff frequency is >= Nyquist frequency. Adjusting to 0.99*Nyquist for stability.');
-            cutoff = 0.99;
-        end
-
-        if strcmp(filterband, 'high')
-             [b, a] = cheby1(4, 0.8, cutoff, 'high');
-        else
-             [b, a] = cheby1(4, 0.8, cutoff, 'low');
-        end
-    else
-        warning('Signal Processing Toolbox not found. Using dummy filter coefficients.');
-        b = 1; a = 1;
-    end
+    % 3. Filter Logic moved to filterData call inside loop,
+    % but we need filterStruct for metadata.
+    % We can call filterData with dummy data to get struct
+    [~, filterStruct] = ndi.app.pyraview.filterData([0], sr, filterband);
 
     % 4. Prepare for Processing
     temp_dir = tempname;
@@ -82,13 +65,34 @@ function pyraview_doc = makePyraviewDoc(probe, epochid, filterband, options)
     nativeRate = sr;
     append = true;
 
+    % Initialize Progress Bar
+    pb_fig = figure('Name', 'Pyraview Progress', 'NumberTitle', 'off', 'MenuBar', 'none', ...
+                    'ToolBar', 'none', 'Resize', 'off', 'Position', [500 500 520 80]);
+    % Pass Name-Value arguments directly, NOT as a struct
+    pb = ndi.gui.component.NDIProgressBar('Parent', pb_fig, ...
+        'Message', 'Initializing...', 'Text', 'Starting data processing...');
+
     % 5. Loop and Process Chunks
     chunk_dur = options.chunkDuration;
     excess = options.chunkExcess;
 
     current_t = t0;
 
+    % Initialize data_central size for metadata
+    data_channels = 0;
+
+    total_dur = t1 - t0;
+    if total_dur <= 0, total_dur = 1; end
+
+    cleanupObj = onCleanup(@() delete(pb_fig));
+
     while current_t < t1
+        % Update Progress
+        progress = (current_t - t0) / total_dur;
+        pb.Value = progress;
+        pb.Message = sprintf('Processing %.1f%%...', progress * 100);
+        drawnow;
+
         % Define read times with excess
         t_read_start = current_t - excess;
         t_read_end = current_t + chunk_dur + excess;
@@ -98,8 +102,12 @@ function pyraview_doc = makePyraviewDoc(probe, epochid, filterband, options)
         data = probe.readtimeseries(epochid, t_read_start, t_read_end);
 
         if ~isempty(data)
-             % Filter data
-             data = filter(b, a, data);
+             % Filter data using new function
+             [data, ~] = ndi.app.pyraview.filterData(data, sr, filterband);
+
+             if data_channels == 0
+                 data_channels = size(data, 2);
+             end
 
              % Calculate actual start time of data
              % readtimeseries typically clamps to valid range [t0, t1]
@@ -135,6 +143,10 @@ function pyraview_doc = makePyraviewDoc(probe, epochid, filterband, options)
         current_t = current_t + chunk_dur;
     end
 
+    pb.Value = 1;
+    pb.Message = 'Completed.';
+    drawnow;
+
     % 6. Create Document
     % Create an ndi.document of type 'pyraview'
 
@@ -142,19 +154,11 @@ function pyraview_doc = makePyraviewDoc(probe, epochid, filterband, options)
     pyraviewStruct.label = filterband;
     pyraviewStruct.nativeRate = sr;
     pyraviewStruct.nativeStartTime = t0;
-    pyraviewStruct.channels = size(data_central,2);
+    pyraviewStruct.channels = data_channels;
     pyraviewStruct.dataType = 'double';
     pyraviewStruct.decimationLevels = steps;
     pyraviewStruct.decimationSamplingRates = sr ./ cumprod(pyraviewStruct.decimationLevels);
     pyraviewStruct.decimationStartTimes = t0*ones(numel(pyraviewStruct.decimationLevels),1);
-
-    filterStruct.type = filterband;
-    filterStruct.algorithm = 'chebyshev_1';
-    filterStruct.parameters = struct('sampleFrequency', sr, ...
-        'order', 4, ...
-        'filterFrequency', 300, ...
-        'passBandRipple', 0.8, ...
-        'stopbandAttentuation', NaN);
 
     epochclocktimesStruct.clocktype='dev_local_time';
     epochclocktimesStruct.t0_t1 = [t0;t1];
@@ -168,5 +172,6 @@ function pyraview_doc = makePyraviewDoc(probe, epochid, filterband, options)
         pyraview_doc = pyraview_doc.add_file(['level' int2str(i) '.bin'],[prefix '_L' int2str(i) '.bin']);
     end
 
-    % Note: We are NOT adding it to the database as per instructions.
+    % Add to database
+    probe.session.database_add(pyraview_doc);
 end
