@@ -36,7 +36,7 @@ function pyraview(app_options)
 
         % Callback string for controls
         % Uses the Tag of the control as the command
-        callbackstr = 'ndi.app.pyraview(''command'', get(gcbo,''Tag''), ''fig'', gcbf);';
+        callbackstr = 'ndi.app.pyraview(''command'', get(gcbo,''Tag''), ''fig'', gcbf); drawnow limitrate;';
 
         % Initialize UserData
         ud = struct();
@@ -186,16 +186,18 @@ function pyraview(app_options)
 
 
         % Scrollbar 1 (Top) - Pan
-        uicontrol(frame_panel, 'Style', 'slider', 'Units', 'normalized', ...
+        s1 = uicontrol(frame_panel, 'Style', 'slider', 'Units', 'normalized', ...
              'Position', [0 0 1 1], ...
              'Tag', 'Scroll1', 'Callback', callbackstr, ...
              'Min', 0, 'Max', 1, 'Value', 0, 'SliderStep', [0.01, 0.1]);
+        addlistener(s1, 'ContinuousValueChange', @(src,ev) continuous_callback(src, fig));
 
         % Scrollbar 2 (Bottom) - Zoom
-        uicontrol(frame_panel, 'Style', 'slider', 'Units', 'normalized', ...
+        s2 = uicontrol(frame_panel, 'Style', 'slider', 'Units', 'normalized', ...
              'Position', [0 0 1 1], ...
              'Tag', 'Scroll2', 'Callback', callbackstr, ...
-             'Min', 0, 'Max', 1, 'Value', 0.5, 'SliderStep', [0.01, 0.1]);
+             'Min', 0, 'Max', 1, 'Value', 0.5, 'SliderStep', [1/200, 10/200]);
+        addlistener(s2, 'ContinuousValueChange', @(src,ev) continuous_callback(src, fig));
 
         % Toggle Buttons: Pan / Zoom
         uicontrol(frame_panel, 'Style', 'togglebutton', 'String', 'Pan', ...
@@ -605,14 +607,19 @@ function update_from_scrollbars(fig, ud)
     full_dur = ud.epoch_t1 - ud.epoch_t0;
     if full_dur <= 0, full_dur = 1; end
 
-    min_dur = 0.01; % 10ms
-
     % ZOOM Logic: Maintain center time
     % Calculate old center
     center_t = ud.view_t0 + ud.view_duration / 2;
 
     % New Duration
-    new_duration = exp( log(full_dur) * (1-val_zoom) + log(min_dur) * val_zoom );
+    W_max = 2592000;
+    W_min = 0.001;
+    N = 200;
+
+    s = round(val_zoom * N);
+
+    exponent = (N - s) / N;
+    new_duration = W_min * (W_max / W_min)^exponent;
     ud.view_duration = new_duration;
 
     % New T0 based on old center
@@ -651,18 +658,28 @@ function update_from_scrollbars(fig, ud)
     update_view(fig);
 end
 
+function continuous_callback(src, fig)
+    ndi.app.pyraview('command', get(src, 'Tag'), 'fig', fig);
+    drawnow limitrate;
+end
+
 function update_scrollbars(fig, ud)
     s1 = findobj(fig, 'Tag', 'Scroll1');
     s2 = findobj(fig, 'Tag', 'Scroll2');
 
     full_dur = ud.epoch_t1 - ud.epoch_t0;
     if full_dur <= 0, full_dur = 1; end
-    min_dur = 0.01;
 
     % Calculate val_zoom (Scroll2)
-    num = log(ud.view_duration) - log(full_dur);
-    den = log(min_dur) - log(full_dur);
-    val_zoom = num / den;
+    W_max = 2592000;
+    W_min = 0.001;
+    N = 200;
+
+    exponent_ideal = log(ud.view_duration / W_min) / log(W_max / W_min);
+    s_ideal = N * (1 - exponent_ideal);
+    s = round(s_ideal);
+    val_zoom = s / N;
+
     val_zoom = max(0, min(1, val_zoom));
 
     set(s2, 'Value', val_zoom);
