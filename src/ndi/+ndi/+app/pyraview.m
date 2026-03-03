@@ -199,6 +199,15 @@ function pyraview(app_options)
              'Min', 0, 'Max', 1, 'Value', 0.5, 'SliderStep', [1/200, 10/200]);
         addlistener(s2, 'ContinuousValueChange', @(src,ev) continuous_callback(src, fig));
 
+        % Buttons: Reset X / Reset Y
+        uicontrol(frame_panel, 'Style', 'pushbutton', 'String', 'Reset X', ...
+             'Units', 'normalized', 'Position', [0.6 0.05 0.1 0.05], ...
+             'Tag', 'ResetXButton', 'Callback', callbackstr);
+
+        uicontrol(frame_panel, 'Style', 'pushbutton', 'String', 'Reset Y', ...
+             'Units', 'normalized', 'Position', [0.7 0.05 0.1 0.05], ...
+             'Tag', 'ResetYButton', 'Callback', callbackstr);
+
         % Toggle Buttons: Pan / Zoom
         uicontrol(frame_panel, 'Style', 'togglebutton', 'String', 'Pan', ...
              'Units', 'normalized', 'Position', [0.8 0.05 0.1 0.05], ...
@@ -279,6 +288,16 @@ function pyraview(app_options)
                 update_from_scrollbars(fig, ud);
             case 'Scroll2' % Zoom
                 update_from_scrollbars(fig, ud);
+            case 'ResetXButton'
+                ud.view_t0 = ud.epoch_t0;
+                ud.view_duration = ud.epoch_t1 - ud.epoch_t0;
+                set(fig, 'UserData', ud);
+                update_scrollbars(fig, ud);
+                update_view(fig);
+            case 'ResetYButton'
+                axis(ud.axes, 'auto y');
+                ud.first_plot = true;
+                set(fig, 'UserData', ud);
             case 'PanButton'
                 set(findobj(fig, 'Tag', 'PanButton'), 'Value', 1);
                 set(findobj(fig, 'Tag', 'ZoomButton'), 'Value', 0);
@@ -974,6 +993,8 @@ function on_resize(fig)
     s2 = findobj(mf, 'Tag', 'Scroll2'); % Zoom (Bottom)
     ax = findobj(mf, 'Tag', 'MainAxes');
 
+    rxb = findobj(mf, 'Tag', 'ResetXButton');
+    ryb = findobj(mf, 'Tag', 'ResetYButton');
     pb = findobj(mf, 'Tag', 'PanButton');
     zb = findobj(mf, 'Tag', 'ZoomButton');
 
@@ -987,6 +1008,10 @@ function on_resize(fig)
     btn_w_norm = 0.1;
     right_margin = 0.05;
 
+    % Reset X Button
+    set(rxb, 'Position', [1 - right_margin - 4*btn_w_norm, 2*sb_h_norm, btn_w_norm, btn_h_norm]);
+    % Reset Y Button
+    set(ryb, 'Position', [1 - right_margin - 3*btn_w_norm, 2*sb_h_norm, btn_w_norm, btn_h_norm]);
     % Pan Button
     set(pb, 'Position', [1 - right_margin - 2*btn_w_norm, 2*sb_h_norm, btn_w_norm, btn_h_norm]);
     % Zoom Button
