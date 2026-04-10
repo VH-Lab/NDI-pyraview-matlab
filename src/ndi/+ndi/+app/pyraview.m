@@ -620,57 +620,57 @@ function update_from_scrollbars(fig, ud)
     s1 = findobj(fig, 'Tag', 'Scroll1'); % Pan
     s2 = findobj(fig, 'Tag', 'Scroll2'); % Zoom
 
-    val_pan = get(s1, 'Value');
-    val_zoom = get(s2, 'Value');
-
     full_dur = ud.epoch_t1 - ud.epoch_t0;
     if full_dur <= 0, full_dur = 1; end
 
-    % ZOOM Logic: Maintain center time
-    % Calculate old center
-    center_t = ud.view_t0 + ud.view_duration / 2;
-
-    % New Duration
-    W_max = 2592000;
-    W_min = 0.001;
-    N = 200;
-
-    s = round(val_zoom * N);
-
-    exponent = (N - s) / N;
-    new_duration = W_min * (W_max / W_min)^exponent;
-    ud.view_duration = new_duration;
-
-    % New T0 based on old center
-    new_t0 = center_t - new_duration / 2;
-
-    % Clamp T0 to epoch bounds
-    if new_t0 < ud.epoch_t0
-        new_t0 = ud.epoch_t0;
-    end
-    if new_t0 + new_duration > ud.epoch_t1
-        new_t0 = ud.epoch_t1 - new_duration;
-    end
-    % If duration > full epoch (shouldn't happen with logic above), clamp t0
-    if new_t0 < ud.epoch_t0
-        new_t0 = ud.epoch_t0;
-    end
-
-    ud.view_t0 = new_t0;
-
-    % Update Pan Scrollbar to match new T0 (because we shifted T0)
-
     obj = gcbo;
+    tag = '';
     if ~isempty(obj)
         tag = get(obj, 'Tag');
-        if strcmp(tag, 'Scroll1') % Pan
-            % Standard Pan Logic
-            max_start = ud.epoch_t1 - ud.view_duration;
-            if max_start < ud.epoch_t0, max_start = ud.epoch_t0; end
-            ud.view_t0 = ud.epoch_t0 + val_pan * (max_start - ud.epoch_t0);
-        elseif strcmp(tag, 'Scroll2') % Zoom
-            % Already handled above (Center Logic)
+    end
+
+    if strcmp(tag, 'Scroll1')
+        % PAN: slider value is in milliseconds relative to epoch_t0
+        val_ms = round(get(s1, 'Value'));
+        ud.view_t0 = ud.epoch_t0 + val_ms / 1000;
+
+        % Clamp to valid pan range
+        max_start = ud.epoch_t1 - ud.view_duration;
+        if max_start < ud.epoch_t0, max_start = ud.epoch_t0; end
+        if ud.view_t0 > max_start, ud.view_t0 = max_start; end
+        if ud.view_t0 < ud.epoch_t0, ud.view_t0 = ud.epoch_t0; end
+    else
+        % ZOOM: recompute view_duration, maintain center time
+        val_zoom = get(s2, 'Value');
+
+        center_t = ud.view_t0 + ud.view_duration / 2;
+
+        W_max = 2592000;
+        W_min = 0.001;
+        N = 200;
+
+        s = round(val_zoom * N);
+        exponent = (N - s) / N;
+        new_duration = W_min * (W_max / W_min)^exponent;
+        ud.view_duration = new_duration;
+
+        new_t0 = center_t - new_duration / 2;
+
+        % Clamp T0 to epoch bounds
+        if new_t0 < ud.epoch_t0
+            new_t0 = ud.epoch_t0;
         end
+        if new_t0 + new_duration > ud.epoch_t1
+            new_t0 = ud.epoch_t1 - new_duration;
+        end
+        if new_t0 < ud.epoch_t0
+            new_t0 = ud.epoch_t0;
+        end
+
+        ud.view_t0 = new_t0;
+
+        % Pan slider range/step depends on view_duration, so refresh it
+        update_pan_slider(s1, ud);
     end
 
     set(fig, 'UserData', ud);
@@ -703,16 +703,52 @@ function update_scrollbars(fig, ud)
 
     set(s2, 'Value', val_zoom);
 
-    % Calculate val_pan (Scroll1)
-    max_start = ud.epoch_t1 - ud.view_duration;
-    if max_start <= ud.epoch_t0
-        val_pan = 0;
-    else
-        val_pan = (ud.view_t0 - ud.epoch_t0) / (max_start - ud.epoch_t0);
-    end
-    val_pan = max(0, min(1, val_pan));
+    % Pan scrollbar (Scroll1): 1 step per millisecond, arrow = 10% of view
+    update_pan_slider(s1, ud);
+end
 
-    set(s1, 'Value', val_pan);
+function update_pan_slider(s1, ud)
+    % Configure the pan scrollbar so that:
+    %   - there is one slider unit per millisecond of pannable range, and
+    %   - clicking the arrow buttons moves the view by 10% of the current
+    %     view duration (the trough jumps one full view width).
+    %
+    % The slider value is the start time of the view, measured in
+    % milliseconds since ud.epoch_t0.
+
+    if isempty(s1) || ~isgraphics(s1)
+        return;
+    end
+
+    max_start = ud.epoch_t1 - ud.view_duration;
+    if max_start < ud.epoch_t0, max_start = ud.epoch_t0; end
+
+    range_ms = round((max_start - ud.epoch_t0) * 1000);
+
+    if range_ms < 1
+        % Nothing to pan (view covers the whole epoch). Park the slider.
+        set(s1, 'Min', 0, 'Max', 1, 'Value', 0, ...
+                'SliderStep', [1 1], 'Enable', 'off');
+        return;
+    end
+
+    val_ms = round((ud.view_t0 - ud.epoch_t0) * 1000);
+    val_ms = max(0, min(range_ms, val_ms));
+
+    % Arrow button = 10% of current view; trough click = one full view.
+    arrow_ms = max(1, round(0.1 * ud.view_duration * 1000));
+    page_ms  = max(arrow_ms, round(ud.view_duration * 1000));
+
+    minor_frac = min(1, arrow_ms / range_ms);
+    major_frac = min(1, page_ms  / range_ms);
+    if major_frac <= minor_frac
+        major_frac = min(1, minor_frac * 10);
+    end
+
+    % Set Min/Max before Value to avoid out-of-range errors when the
+    % previous Max was smaller than the new val_ms.
+    set(s1, 'Min', 0, 'Max', range_ms, 'Value', val_ms, ...
+            'SliderStep', [minor_frac, major_frac], 'Enable', 'on');
 end
 
 function on_zoom_pan(fig, ~)
