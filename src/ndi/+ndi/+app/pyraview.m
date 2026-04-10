@@ -703,15 +703,16 @@ function update_scrollbars(fig, ud)
 
     set(s2, 'Value', val_zoom);
 
-    % Pan scrollbar (Scroll1): 1 step per millisecond, arrow = 10% of view
+    % Pan scrollbar (Scroll1): 1 step per ms; arrow/trough = 10% of view
     update_pan_slider(s1, ud);
 end
 
 function update_pan_slider(s1, ud)
     % Configure the pan scrollbar so that:
     %   - there is one slider unit per millisecond of pannable range, and
-    %   - clicking the arrow buttons moves the view by 10% of the current
-    %     view duration (the trough jumps one full view width).
+    %   - clicking either the arrow buttons or the trough between the
+    %     thumb and the arrow moves the view by 10% of the current view
+    %     duration.
     %
     % The slider value is the start time of the view, measured in
     % milliseconds since ud.epoch_t0.
@@ -735,20 +736,16 @@ function update_pan_slider(s1, ud)
     val_ms = round((ud.view_t0 - ud.epoch_t0) * 1000);
     val_ms = max(0, min(range_ms, val_ms));
 
-    % Arrow button = 10% of current view; trough click = one full view.
-    arrow_ms = max(1, round(0.1 * ud.view_duration * 1000));
-    page_ms  = max(arrow_ms, round(ud.view_duration * 1000));
-
-    minor_frac = min(1, arrow_ms / range_ms);
-    major_frac = min(1, page_ms  / range_ms);
-    if major_frac <= minor_frac
-        major_frac = min(1, minor_frac * 10);
-    end
+    % Both the arrow buttons (minor step) and a click in the trough
+    % between the thumb and the arrow (major step) move the view by 10%
+    % of the current view duration.
+    step_ms = max(1, round(0.1 * ud.view_duration * 1000));
+    step_frac = min(1, step_ms / range_ms);
 
     % Set Min/Max before Value to avoid out-of-range errors when the
     % previous Max was smaller than the new val_ms.
     set(s1, 'Min', 0, 'Max', range_ms, 'Value', val_ms, ...
-            'SliderStep', [minor_frac, major_frac], 'Enable', 'on');
+            'SliderStep', [step_frac, step_frac], 'Enable', 'on');
 end
 
 function on_zoom_pan(fig, ~)
