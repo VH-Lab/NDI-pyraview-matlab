@@ -285,9 +285,9 @@ function pyraview(app_options)
                 update_spiking_plot(fig);
                 plot_data(fig); % Re-plot main axes to show spikes overlay
             case 'Scroll1' % Pan
-                update_from_scrollbars(fig, ud);
+                update_from_scrollbars(fig, ud, 'Scroll1');
             case 'Scroll2' % Zoom
-                update_from_scrollbars(fig, ud);
+                update_from_scrollbars(fig, ud, 'Scroll2');
             case 'ResetXButton'
                 ud.view_t0 = ud.epoch_t0;
                 ud.view_duration = ud.epoch_t1 - ud.epoch_t0;
@@ -614,8 +614,13 @@ function update_spacing(fig)
     end
 end
 
-function update_from_scrollbars(fig, ud)
-    % Read scrollbar values and update view_t0 / view_duration
+function update_from_scrollbars(fig, ud, source)
+    % Read scrollbar values and update view_t0 / view_duration.
+    % SOURCE is the tag of the slider that triggered this update
+    % ('Scroll1' for pan, 'Scroll2' for zoom). It is passed in explicitly
+    % because gcbo is empty when this call is dispatched from the
+    % ContinuousValueChange listener, which would otherwise send pan
+    % drags into the zoom branch.
 
     s1 = findobj(fig, 'Tag', 'Scroll1'); % Pan
     s2 = findobj(fig, 'Tag', 'Scroll2'); % Zoom
@@ -623,13 +628,7 @@ function update_from_scrollbars(fig, ud)
     full_dur = ud.epoch_t1 - ud.epoch_t0;
     if full_dur <= 0, full_dur = 1; end
 
-    obj = gcbo;
-    tag = '';
-    if ~isempty(obj)
-        tag = get(obj, 'Tag');
-    end
-
-    if strcmp(tag, 'Scroll1')
+    if strcmp(source, 'Scroll1')
         % PAN: slider value is in milliseconds relative to epoch_t0
         val_ms = round(get(s1, 'Value'));
         ud.view_t0 = ud.epoch_t0 + val_ms / 1000;
