@@ -50,8 +50,10 @@ function [X, Y] = transformSpikeData(spiking_info, selectedIdx, t0, t1, spacing)
 
         if isempty(times), continue; end
 
-        % Filter times within view
-        t_plot = times;
+        % Filter times within view. Only spikes inside [t0, t1] are visible,
+        % so restricting to the window keeps the number of plotted segments
+        % proportional to what is on screen rather than the whole epoch.
+        t_plot = times(times >= t0 & times <= t1);
 
         if isempty(t_plot), continue; end
 

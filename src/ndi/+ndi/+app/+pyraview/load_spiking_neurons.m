@@ -40,6 +40,17 @@ function spiking_info = load_spiking_neurons(session, probe, epochid)
     Q_neuron = ndi.query('', 'isa', 'neuron_extracellular');
     all_neuron_docs = session.database_search(Q_neuron);
 
+    % Build an element_id -> neuron_doc map in a single pass so that matching
+    % each element below is an O(1) lookup instead of an O(N^2) rescan.
+    neuron_map = containers.Map('KeyType', 'char', 'ValueType', 'any');
+    for j = 1:numel(all_neuron_docs)
+        try
+            dep_id = all_neuron_docs{j}.dependency_value('element_id');
+            neuron_map(dep_id) = all_neuron_docs{j};
+        catch
+        end
+    end
+
     % Initialize Progress Bar
     pb_fig = figure('Name', 'Loading Spiking Neurons', 'NumberTitle', 'off', 'MenuBar', 'none', ...
                     'ToolBar', 'none', 'Resize', 'off', 'Position', [500 500 520 80]);
@@ -62,17 +73,10 @@ function spiking_info = load_spiking_neurons(session, probe, epochid)
 
         el_obj = ndi.database.fun.ndi_document2ndi_object(el_doc, session);
 
-        % Find matching neuron doc
+        % Find matching neuron doc (O(1) lookup)
         n_doc = [];
-        for j = 1:numel(all_neuron_docs)
-            try
-                dep_id = all_neuron_docs{j}.dependency_value('element_id');
-                if strcmp(dep_id, el_id)
-                    n_doc = all_neuron_docs{j};
-                    break;
-                end
-            catch
-            end
+        if neuron_map.isKey(el_id)
+            n_doc = neuron_map(el_id);
         end
 
         quality = 0;
