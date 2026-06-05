@@ -1137,9 +1137,13 @@ function plot_data(fig)
     % Replace only the previous main traces, leaving any spike tick objects
     % (Tag 'SpikeTick') in place. The ticks are drawn once per selection by
     % update_spike_overlay and must survive the per-pan trace replot.
+    %
+    % Draw the data in an explicit blue: with hold on (needed to preserve the
+    % ticks) plot() does not reset the color order, so without this the trace
+    % colour would advance on every pan/zoom redraw.
     delete(findobj(ud.axes, 'Tag', 'MainTrace'));
     hold(ud.axes, 'on');
-    h_main = plot(ud.axes, X, Y);
+    h_main = plot(ud.axes, X, Y, 'Color', [0 0.4470 0.7410]);
     set(h_main, 'Tag', 'MainTrace');
 
     % Keep the tick layer drawn on top of the freshly added traces.
