@@ -2,8 +2,10 @@ classdef transformSpikeData_test < matlab.unittest.TestCase
     % TRANSFORMSPIKEDATA_TEST - Unit test for ndi.app.pyraview.transformSpikeData
 
     methods (Test)
-        function testNoFiltering(testCase)
-            % Test that spikes outside t0 and t1 are still returned
+        function testWindowFiltering(testCase)
+            % Spikes outside the visible window [t0, t1] should be filtered out
+            % so that the number of plotted segments stays proportional to what
+            % is on screen rather than the whole epoch.
 
             % Mock spiking_info
             % Structure array with spike_times and best_channel
@@ -20,18 +22,31 @@ classdef transformSpikeData_test < matlab.unittest.TestCase
             [X, Y] = ndi.app.pyraview.transformSpikeData(spiking_info, selectedIdx, t0, t1, spacing);
 
             % Verification
-            % We expect X to contain 10, 20, and 30, even though 10 and 30 are outside [15, 25]
+            % Only the spike at t=20 is inside [15, 25]; 10 and 30 are excluded.
             % X format is [t; t; NaN] for each spike
 
-            testCase.verifyTrue(any(X == 10), 'X should contain spike at t=10');
-            testCase.verifyTrue(any(X == 20), 'X should contain spike at t=20');
-            testCase.verifyTrue(any(X == 30), 'X should contain spike at t=30');
+            testCase.verifyFalse(any(X == 10), 'X should not contain spike at t=10 (before window)');
+            testCase.verifyTrue(any(X == 20), 'X should contain spike at t=20 (inside window)');
+            testCase.verifyFalse(any(X == 30), 'X should not contain spike at t=30 (after window)');
 
             % Verify Y structure
-            % Should have 3 segments (3 spikes) * 3 points = 9 points
-            testCase.verifyEqual(numel(X), 9, 'Should have 9 points in X');
-            testCase.verifyEqual(numel(Y), 9, 'Should have 9 points in Y');
+            % Should have 1 segment (1 visible spike) * 3 points = 3 points
+            testCase.verifyEqual(numel(X), 3, 'Should have 3 points in X');
+            testCase.verifyEqual(numel(Y), 3, 'Should have 3 points in Y');
 
+        end
+
+        function testWindowBoundariesInclusive(testCase)
+            % Spikes exactly at t0 and t1 should be included.
+            spiking_info = struct();
+            spiking_info(1).spike_times = [15, 25];
+            spiking_info(1).best_channel = 1;
+
+            [X, ~] = ndi.app.pyraview.transformSpikeData(spiking_info, 1, 15, 25, 100);
+
+            testCase.verifyTrue(any(X == 15), 'X should contain spike at t0=15');
+            testCase.verifyTrue(any(X == 25), 'X should contain spike at t1=25');
+            testCase.verifyEqual(numel(X), 6, 'Should have 6 points (2 spikes x 3)');
         end
 
         function testMultipleNeurons(testCase)

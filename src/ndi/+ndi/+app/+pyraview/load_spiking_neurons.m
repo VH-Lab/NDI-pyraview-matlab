@@ -14,8 +14,19 @@ function spiking_info = load_spiking_neurons(session, probe, epochid)
 %                      'element_doc' : The NDI element document
 %                      'neuron_doc'  : The associated neuron_extracellular document
 %                      'label'       : Display label
-%                      'spike_times' : Vector of spike times
+%                      'name'        : Element name string (for sorting)
+%                      'quality'     : Neuron quality number
+%                      'spike_times' : Vector of spike times (loaded lazily; see
+%                                      'times_loaded')
+%                      'times_loaded': Logical; false until spike_times have been
+%                                      read on demand for a selected unit
 %                      'best_channel': Scalar channel index of max energy
+%
+%   Note: spike times are NOT read here. For populations with hundreds of
+%   units, reading every spike train up front (one readtimeseries per
+%   element) dominates load time, so 'spike_times' is left empty and
+%   'times_loaded' is false. Callers read each unit's spike times on demand
+%   the first time it is selected for display.
 %
 
     arguments
@@ -25,7 +36,8 @@ function spiking_info = load_spiking_neurons(session, probe, epochid)
     end
 
     spiking_info = struct('element_obj', {}, 'element_doc', {}, 'neuron_doc', {}, ...
-                          'label', {}, 'spike_times', {}, 'best_channel', {});
+                          'label', {}, 'name', {}, 'quality', {}, ...
+                          'spike_times', {}, 'times_loaded', {}, 'best_channel', {});
 
     % 1. Find all spike elements for this probe
     Q1 = ndi.query('element.type', 'exact_string', 'spikes');
@@ -65,7 +77,7 @@ function spiking_info = load_spiking_neurons(session, probe, epochid)
         % Update Progress
         progress = i / num_elements;
         pb.Value = progress;
-        pb.Message = sprintf('Loading neuron %d of %d...', i, num_elements);
+        pb.Message = sprintf('Loading unit %d of %d...', i, num_elements);
         drawnow;
 
         el_doc = element_docs{i};
@@ -104,21 +116,20 @@ function spiking_info = load_spiking_neurons(session, probe, epochid)
             end
         end
 
-        % Read Spike Times
-        try
-            [d, t] = el_obj.readtimeseries(epochid, -Inf, Inf);
-            spike_times = t;
-        catch
-            spike_times = [];
-        end
-
-        label = sprintf('%d %s Q%d', i, el_obj.elementstring(), quality);
+        % Spike times are read lazily (on selection), not here -- see the note
+        % in the help above. Reading every unit's train up front was the main
+        % bottleneck when loading hundreds of neurons.
+        name = el_obj.elementstring();
+        label = sprintf('%d %s Q%d', i, name, quality);
 
         spiking_info(i).element_obj = el_obj;
         spiking_info(i).element_doc = el_doc;
         spiking_info(i).neuron_doc = n_doc;
         spiking_info(i).label = label;
-        spiking_info(i).spike_times = spike_times;
+        spiking_info(i).name = name;
+        spiking_info(i).quality = quality;
+        spiking_info(i).spike_times = [];
+        spiking_info(i).times_loaded = false;
         spiking_info(i).best_channel = best_ch;
     end
 end

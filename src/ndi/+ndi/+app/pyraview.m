@@ -170,9 +170,14 @@ function pyraview(app_options)
              'Units', 'normalized', 'Position', [0.6 0.9 0.4 0.1], ...
              'Tag', 'SpikingTitle', 'FontWeight', 'bold');
 
+        % Sort checkbox: by max channel location (else by name)
+        uicontrol(sf, 'Style', 'checkbox', 'String', 'Sort by max channel', ...
+             'Units', 'normalized', 'Position', [0.62 0.84 0.38 0.05], ...
+             'Tag', 'SpikingSortCheckbox', 'Callback', callbackstr, 'Value', 0);
+
         % Spiking Listbox
         uicontrol(sf, 'Style', 'listbox', 'String', {}, ...
-             'Units', 'normalized', 'Position', [0.6 0 0.4 0.9], ...
+             'Units', 'normalized', 'Position', [0.6 0 0.4 0.83], ...
              'Tag', 'SpikingList', 'Callback', callbackstr);
 
         % Link Y Axes
@@ -277,13 +282,17 @@ function pyraview(app_options)
                         end
 
                         ud.spiking_info = spiking_info;
+                        ud.spiking_epochid = epoch_str; % needed for lazy spike-time reads
                         set(fig, 'UserData', ud);
                         update_spiking_list_ui(fig);
                     end
                 end
             case 'SpikingList'
+                ensure_spike_times_loaded(fig); % load times for newly selected units
                 update_spiking_plot(fig);
                 plot_data(fig); % Re-plot main axes to show spikes overlay
+            case 'SpikingSortCheckbox'
+                apply_spiking_sort(fig);
             case 'Scroll1' % Pan
                 update_from_scrollbars(fig, ud, 'Scroll1');
             case 'Scroll2' % Zoom
@@ -494,6 +503,7 @@ function check_and_load(fig)
     cb = findobj(fig, 'Tag', 'SpikingCheckbox');
     if get(cb, 'Value')
         ud.spiking_info = ndi.app.pyraview.load_spiking_neurons(ud.session, probe, epoch_str);
+        ud.spiking_epochid = epoch_str; % needed for lazy spike-time reads
         set(fig, 'UserData', ud);
         update_spiking_list_ui(fig);
     end
@@ -501,21 +511,152 @@ end
 
 function update_spiking_list_ui(fig)
     ud = get(fig, 'UserData');
-    spiking_info = ud.spiking_info;
 
+    % Sort the units according to the sort checkbox before displaying them.
+    cb = findobj(fig, 'Tag', 'SpikingSortCheckbox');
+    by_channel = ~isempty(cb) && get(cb, 'Value') == 1;
+    ud.spiking_info = sort_spiking_info(ud.spiking_info, by_channel);
+    set(fig, 'UserData', ud);
+
+    spiking_info = ud.spiking_info;
     strs = {spiking_info.label};
 
     lb = findobj(fig, 'Tag', 'SpikingList');
     set(lb, 'String', strs);
     set(lb, 'Max', max(2, numel(strs))); % Allow multiple selection
-    if ~isempty(strs)
-        set(lb, 'Value', 1:numel(strs));
-    else
+
+    % Default the units to off when there are many of them. Loading and
+    % plotting spike times happens lazily on selection, so leaving a large
+    % population unselected keeps opening the panel fast.
+    if isempty(strs) || numel(strs) > 20
         set(lb, 'Value', []);
+    else
+        set(lb, 'Value', 1:numel(strs));
     end
 
+    ensure_spike_times_loaded(fig); % read times for any default-selected units
     update_spiking_plot(fig);
     plot_data(fig); % Update main plot to include spikes
+end
+
+function si = sort_spiking_info(si, by_channel)
+    % Reorder the spiking_info struct array. When BY_CHANNEL is true, sort by
+    % best (maximum-energy) channel location; otherwise sort by unit name.
+    % Labels are renumbered to match the new display order.
+    if isempty(si)
+        return;
+    end
+
+    if by_channel
+        keys = [si.best_channel];
+        [~, order] = sort(keys, 'ascend');
+    else
+        names = cell(1, numel(si));
+        for k = 1:numel(si)
+            if isfield(si, 'name') && ~isempty(si(k).name)
+                names{k} = si(k).name;
+            else
+                names{k} = si(k).label;
+            end
+        end
+        [~, order] = sort(lower(names));
+    end
+
+    si = si(order);
+
+    % Renumber the leading index in each label to match the displayed order.
+    for k = 1:numel(si)
+        q = 0;
+        if isfield(si, 'quality') && ~isempty(si(k).quality)
+            q = si(k).quality;
+        end
+        nm = '';
+        if isfield(si, 'name') && ~isempty(si(k).name)
+            nm = si(k).name;
+        end
+        si(k).label = sprintf('%d %s Q%d', k, nm, q);
+    end
+end
+
+function apply_spiking_sort(fig)
+    % Re-sort the unit list when the sort checkbox is toggled, preserving the
+    % current selection (matched by element id since indices change on sort).
+    ud = get(fig, 'UserData');
+    si = ud.spiking_info;
+    if isempty(si)
+        return;
+    end
+
+    lb = findobj(fig, 'Tag', 'SpikingList');
+    sel = get(lb, 'Value');
+    sel_ids = {};
+    for k = 1:numel(sel)
+        if sel(k) <= numel(si)
+            sel_ids{end+1} = si(sel(k)).element_doc.id(); %#ok<AGROW>
+        end
+    end
+
+    cb = findobj(fig, 'Tag', 'SpikingSortCheckbox');
+    by_channel = ~isempty(cb) && get(cb, 'Value') == 1;
+    si = sort_spiking_info(si, by_channel);
+    ud.spiking_info = si;
+    set(fig, 'UserData', ud);
+
+    % Restore selection by element id.
+    new_sel = [];
+    for k = 1:numel(si)
+        if any(strcmp(si(k).element_doc.id(), sel_ids))
+            new_sel(end+1) = k; %#ok<AGROW>
+        end
+    end
+    set(lb, 'String', {si.label});
+    set(lb, 'Max', max(2, numel(si)));
+    set(lb, 'Value', new_sel);
+
+    ensure_spike_times_loaded(fig);
+    update_spiking_plot(fig);
+    plot_data(fig);
+end
+
+function ensure_spike_times_loaded(fig)
+    % Lazily read spike times for the currently selected units, caching the
+    % result so each unit is read at most once. This replaces the previous
+    % behaviour of reading every unit's spike train up front.
+    ud = get(fig, 'UserData');
+    si = ud.spiking_info;
+    if isempty(si)
+        return;
+    end
+
+    if ~isfield(ud, 'spiking_epochid') || isempty(ud.spiking_epochid)
+        return;
+    end
+    epochid = ud.spiking_epochid;
+
+    lb = findobj(fig, 'Tag', 'SpikingList');
+    sel = get(lb, 'Value');
+
+    changed = false;
+    for k = 1:numel(sel)
+        idx = sel(k);
+        if idx > numel(si), continue; end
+        if isfield(si, 'times_loaded') && si(idx).times_loaded
+            continue;
+        end
+        try
+            [~, t] = si(idx).element_obj.readtimeseries(epochid, -Inf, Inf);
+            si(idx).spike_times = t;
+        catch
+            si(idx).spike_times = [];
+        end
+        si(idx).times_loaded = true;
+        changed = true;
+    end
+
+    if changed
+        ud.spiking_info = si;
+        set(fig, 'UserData', ud);
+    end
 end
 
 function update_spiking_plot(fig)
@@ -1061,6 +1202,7 @@ function on_resize(fig)
         sax = findobj(sf, 'Tag', 'SpikingAxes');
         slb = findobj(sf, 'Tag', 'SpikingList');
         stt = findobj(sf, 'Tag', 'SpikingTitle');
+        ssc = findobj(sf, 'Tag', 'SpikingSortCheckbox');
 
         % Spiking Axes on Left 60% of Spiking Frame
         % Align bottom/top to MainAxes relative to Frame Height
@@ -1068,11 +1210,14 @@ function on_resize(fig)
         spiking_ax_pos = [0.1, main_ax_pos(2), 0.5, main_ax_pos(4)];
         set(sax, 'Position', spiking_ax_pos);
 
-        % Listbox on Right
-        set(slb, 'Position', [0.65, 0, 0.35, 0.9]);
-
         % Title
         set(stt, 'Position', [0.65, 0.9, 0.35, 0.1]);
+
+        % Sort checkbox under the title
+        set(ssc, 'Position', [0.65, 0.85, 0.35, 0.05]);
+
+        % Listbox on Right, below the checkbox
+        set(slb, 'Position', [0.65, 0, 0.35, 0.84]);
     end
 
     update_view(fig);
