@@ -639,13 +639,38 @@ function ensure_spike_times_loaded(fig)
     lb = findobj(fig, 'Tag', 'SpikingList');
     sel = get(lb, 'Value');
 
-    changed = false;
+    % Determine which selected units still need their object built and spike
+    % times read, so the progress bar is shown only when there is real work.
+    needIdx = [];
     for k = 1:numel(sel)
         idx = sel(k);
         if idx > numel(si), continue; end
         if isfield(si, 'times_loaded') && si(idx).times_loaded
             continue;
         end
+        needIdx(end+1) = idx; %#ok<AGROW>
+    end
+
+    if isempty(needIdx)
+        return;
+    end
+
+    % Progress bar: units are read one at a time (object construction +
+    % readtimeseries) and this can be slow for many newly selected units.
+    pb_fig = figure('Name', 'Loading Spiking Neurons', 'NumberTitle', 'off', ...
+        'MenuBar', 'none', 'ToolBar', 'none', 'Resize', 'off', ...
+        'Position', [500 500 520 80]);
+    pb = ndi.gui.component.NDIProgressBar('Parent', pb_fig, ...
+        'Message', 'Loading...', 'Text', 'Loading spike times...');
+    cleanupObj = onCleanup(@() delete(pb_fig)); %#ok<NASGU>
+
+    nNeed = numel(needIdx);
+    for k = 1:nNeed
+        idx = needIdx(k);
+
+        pb.Value = k / nNeed;
+        pb.Message = sprintf('Loading unit %d of %d...', k, nNeed);
+        drawnow;
 
         % Build the element object on first use (deferred from load time).
         if isempty(si(idx).element_obj)
@@ -664,12 +689,9 @@ function ensure_spike_times_loaded(fig)
             si(idx).spike_times = [];
         end
         si(idx).times_loaded = true;
-        changed = true;
     end
 
-    if changed
-        set_spiking_info(fig, si);
-    end
+    set_spiking_info(fig, si);
 end
 
 function update_spiking_plot(fig)
