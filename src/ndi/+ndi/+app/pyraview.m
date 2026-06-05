@@ -54,7 +54,10 @@ function pyraview(app_options)
         ud.view_t0 = 0; % Start of current view
         ud.view_duration = 1; % Duration of current view
         ud.channel_y_spacing = 100; % Default spacing
-        ud.spiking_info = struct('element_obj', {}, 'neuron_doc', {}, 'label', {}, 'color', {}); % Store spiking info
+        % Spiking info is kept in appdata, not UserData, so the large struct
+        % (hundreds of documents + waveforms) is not copied on every
+        % get/set(fig,'UserData') during panning. See get/set_spiking_info.
+        set_spiking_info(fig, get_spiking_info(fig)); % initialize empty
         ud.first_plot = true; % Flag for first plot
         ud.split_position = 0.8; % Default split position (80% for Main)
         ud.dragging = false;
@@ -281,16 +284,19 @@ function pyraview(app_options)
                             end
                         end
 
-                        ud.spiking_info = spiking_info;
                         ud.spiking_epochid = epoch_str; % needed for lazy spike-time reads
                         set(fig, 'UserData', ud);
+                        set_spiking_info(fig, spiking_info);
                         update_spiking_list_ui(fig);
                     end
+                else
+                    % Hiding the spiking panel: remove the tick layer too.
+                    delete(findobj(ud.axes, 'Tag', 'SpikeTick'));
                 end
             case 'SpikingList'
                 ensure_spike_times_loaded(fig); % load times for newly selected units
-                update_spiking_plot(fig);
-                plot_data(fig); % Re-plot main axes to show spikes overlay
+                update_spiking_plot(fig);       % waveform side panel
+                update_spike_overlay(fig);      % spike tick layer in main axes
             case 'SpikingSortCheckbox'
                 apply_spiking_sort(fig);
             case 'Scroll1' % Pan
@@ -502,23 +508,21 @@ function check_and_load(fig)
     % Check for spiking
     cb = findobj(fig, 'Tag', 'SpikingCheckbox');
     if get(cb, 'Value')
-        ud.spiking_info = ndi.app.pyraview.load_spiking_neurons(ud.session, probe, epoch_str);
+        si = ndi.app.pyraview.load_spiking_neurons(ud.session, probe, epoch_str);
         ud.spiking_epochid = epoch_str; % needed for lazy spike-time reads
         set(fig, 'UserData', ud);
+        set_spiking_info(fig, si);
         update_spiking_list_ui(fig);
     end
 end
 
 function update_spiking_list_ui(fig)
-    ud = get(fig, 'UserData');
-
     % Sort the units according to the sort checkbox before displaying them.
     cb = findobj(fig, 'Tag', 'SpikingSortCheckbox');
     by_channel = ~isempty(cb) && get(cb, 'Value') == 1;
-    ud.spiking_info = sort_spiking_info(ud.spiking_info, by_channel);
-    set(fig, 'UserData', ud);
+    spiking_info = sort_spiking_info(get_spiking_info(fig), by_channel);
+    set_spiking_info(fig, spiking_info);
 
-    spiking_info = ud.spiking_info;
     strs = {spiking_info.label};
 
     lb = findobj(fig, 'Tag', 'SpikingList');
@@ -535,8 +539,8 @@ function update_spiking_list_ui(fig)
     end
 
     ensure_spike_times_loaded(fig); % read times for any default-selected units
-    update_spiking_plot(fig);
-    plot_data(fig); % Update main plot to include spikes
+    update_spiking_plot(fig);       % waveform side panel
+    update_spike_overlay(fig);      % spike tick layer in main axes
 end
 
 function si = sort_spiking_info(si, by_channel)
@@ -581,8 +585,7 @@ end
 function apply_spiking_sort(fig)
     % Re-sort the unit list when the sort checkbox is toggled, preserving the
     % current selection (matched by element id since indices change on sort).
-    ud = get(fig, 'UserData');
-    si = ud.spiking_info;
+    si = get_spiking_info(fig);
     if isempty(si)
         return;
     end
@@ -599,8 +602,7 @@ function apply_spiking_sort(fig)
     cb = findobj(fig, 'Tag', 'SpikingSortCheckbox');
     by_channel = ~isempty(cb) && get(cb, 'Value') == 1;
     si = sort_spiking_info(si, by_channel);
-    ud.spiking_info = si;
-    set(fig, 'UserData', ud);
+    set_spiking_info(fig, si);
 
     % Restore selection by element id.
     new_sel = [];
@@ -615,7 +617,7 @@ function apply_spiking_sort(fig)
 
     ensure_spike_times_loaded(fig);
     update_spiking_plot(fig);
-    plot_data(fig);
+    update_spike_overlay(fig);
 end
 
 function ensure_spike_times_loaded(fig)
@@ -624,7 +626,7 @@ function ensure_spike_times_loaded(fig)
     % most once. This replaces the previous behaviour of reconstructing every
     % element object and reading every unit's spike train up front.
     ud = get(fig, 'UserData');
-    si = ud.spiking_info;
+    si = get_spiking_info(fig);
     if isempty(si)
         return;
     end
@@ -666,8 +668,7 @@ function ensure_spike_times_loaded(fig)
     end
 
     if changed
-        ud.spiking_info = si;
-        set(fig, 'UserData', ud);
+        set_spiking_info(fig, si);
     end
 end
 
@@ -676,7 +677,7 @@ function update_spiking_plot(fig)
     lb = findobj(fig, 'Tag', 'SpikingList');
 
     selectedIdx = get(lb, 'Value');
-    spiking_info = ud.spiking_info;
+    spiking_info = get_spiking_info(fig);
 
     sax = ud.spiking_axes;
     cla(sax);
@@ -771,6 +772,110 @@ function update_spiking_plot(fig)
     xlim(sax, [0, max(numel(spiking_info), 1) + 1]);
 end
 
+function si = get_spiking_info(fig)
+    % Spiking info lives in appdata (not UserData) so the large struct is not
+    % copied on every get/set(fig,'UserData') on the pan/zoom hot path.
+    si = getappdata(fig, 'spiking_info');
+    if isempty(si)
+        si = struct('element_obj', {}, 'element_doc', {}, 'neuron_doc', {}, ...
+                    'label', {}, 'name', {}, 'quality', {}, ...
+                    'spike_times', {}, 'times_loaded', {}, 'best_channel', {});
+    end
+end
+
+function set_spiking_info(fig, si)
+    setappdata(fig, 'spiking_info', si);
+end
+
+function bring_ticks_to_front(ax)
+    % Move the spike tick line objects to the front of the axes' child stack
+    % (drawn on top of the data traces). Axes child index 1 is topmost.
+    ch = get(ax, 'Children');
+    if numel(ch) < 2
+        return;
+    end
+    tags = get(ch, 'Tag');
+    if ~iscell(tags)
+        tags = {tags};
+    end
+    isTick = strcmp(tags, 'SpikeTick');
+    if any(isTick) && ~all(isTick)
+        set(ax, 'Children', [ch(isTick); ch(~isTick)]);
+    end
+end
+
+function update_spike_overlay(fig)
+    % Draw spike ticks for the *entire recording* into the main trace axes,
+    % one solid line per color group, on top of the data. This runs only when
+    % the selection (or channel spacing) changes. Pan and zoom move the
+    % viewport over these static ticks via xlim/ylim, with no redraw: the
+    % per-pan main-trace replot deletes only its own 'MainTrace' objects and
+    % raises the ticks back to the front (see plot_data / bring_ticks_to_front).
+    ud = get(fig, 'UserData');
+    ax = ud.axes;
+
+    % Remove any previous tick layer.
+    delete(findobj(ax, 'Tag', 'SpikeTick'));
+
+    si = get_spiking_info(fig);
+    lb = findobj(fig, 'Tag', 'SpikingList');
+    if isempty(lb) || isempty(si)
+        return;
+    end
+    selectedIdx = get(lb, 'Value');
+    if isempty(selectedIdx)
+        return;
+    end
+
+    spacing = ud.channel_y_spacing;
+
+    % Group selected units by color so each color is a single line object.
+    groups = containers.Map();
+    for idx = selectedIdx
+        if idx > numel(si), continue; end
+        info = si(idx);
+        col = 'k';
+        if isfield(info, 'color') && ~isempty(info.color)
+            col = info.color;
+        end
+        if ischar(col)
+            key = col;
+        else
+            key = mat2str(col);
+        end
+        if ~isKey(groups, key)
+            groups(key) = idx;
+        else
+            groups(key) = [groups(key), idx];
+        end
+    end
+
+    % Preserve the current view limits; drawing whole-recording ticks must not
+    % rescale the axes (which would jump the view).
+    xl = get(ax, 'XLim');
+    yl = get(ax, 'YLim');
+
+    hold(ax, 'on');
+    keys = groups.keys;
+    for i = 1:numel(keys)
+        key = keys{i};
+        idxs = groups(key);
+        if key(1) == '['
+            col = eval(key);
+        else
+            col = key;
+        end
+        % Unbounded window -> ticks for the entire recording, drawn once.
+        [sX, sY] = ndi.app.pyraview.transformSpikeData(si, idxs, -Inf, Inf, spacing);
+        if ~isempty(sX)
+            plot(ax, sX, sY, 'Color', col, 'LineWidth', 2, 'Tag', 'SpikeTick');
+        end
+    end
+
+    set(ax, 'XLim', xl, 'YLim', yl);
+    bring_ticks_to_front(ax);
+end
+
 function update_spacing(fig)
     ud = get(fig, 'UserData');
     se = findobj(fig, 'Tag', 'SpacingEdit');
@@ -784,9 +889,10 @@ function update_spacing(fig)
     set(fig, 'UserData', ud);
     plot_data(fig); % Re-plot without reloading data
 
-    % Update spiking plot if visible
+    % Update spiking plot if visible (spacing changes the tick Y positions too)
     if strcmp(get(findobj(fig, 'Tag', 'SpikingFrame'), 'Visible'), 'on')
         update_spiking_plot(fig);
+        update_spike_overlay(fig);
     end
 end
 
@@ -1028,65 +1134,17 @@ function plot_data(fig)
     % Pass mapping to transform function
     [X, Y] = ndi.app.pyraview.transformPlotData(data, tVec, level, spacing, mapping);
 
-    plot(ud.axes, X, Y);
+    % Replace only the previous main traces, leaving any spike tick objects
+    % (Tag 'SpikeTick') in place. The ticks are drawn once per selection by
+    % update_spike_overlay and must survive the per-pan trace replot.
+    delete(findobj(ud.axes, 'Tag', 'MainTrace'));
     hold(ud.axes, 'on');
+    h_main = plot(ud.axes, X, Y);
+    set(h_main, 'Tag', 'MainTrace');
 
-    % Plot Spikes if available
-    lb = findobj(fig, 'Tag', 'SpikingList');
-    if ~isempty(lb) && ~isempty(ud.spiking_info)
-        selectedIdx = get(lb, 'Value');
-        if ~isempty(selectedIdx)
-            % Group by Color
-            % Extract colors for selected indices
-            % Since color is string or array, tricky to use 'unique' directly if mixed
-            % But we used standard set.
-            % Map color to string key for grouping
+    % Keep the tick layer drawn on top of the freshly added traces.
+    bring_ticks_to_front(ud.axes);
 
-            groups = containers.Map();
-
-            for idx = selectedIdx
-                if idx > numel(ud.spiking_info), continue; end
-                info = ud.spiking_info(idx);
-
-                col = 'k';
-                if isfield(info, 'color') && ~isempty(info.color)
-                    col = info.color;
-                end
-
-                % Convert to key
-                if ischar(col)
-                    key = col;
-                else
-                    key = mat2str(col);
-                end
-
-                if ~isKey(groups, key)
-                    groups(key) = idx;
-                else
-                    groups(key) = [groups(key), idx];
-                end
-            end
-
-            keys = groups.keys;
-            for i = 1:numel(keys)
-                key = keys{i};
-                idxs = groups(key);
-
-                % Recover color from key or first item
-                % Simplest: use key if char, else eval
-                if key(1) == '['
-                    col = eval(key);
-                else
-                    col = key;
-                end
-
-                [sX, sY] = ndi.app.pyraview.transformSpikeData(ud.spiking_info, idxs, ud.view_t0, ud.view_t0 + ud.view_duration, spacing);
-                if ~isempty(sX)
-                    plot(ud.axes, sX, sY, 'Color', col, 'LineWidth', 2);
-                end
-            end
-        end
-    end
     hold(ud.axes, 'off');
 
     % Restore X limits
