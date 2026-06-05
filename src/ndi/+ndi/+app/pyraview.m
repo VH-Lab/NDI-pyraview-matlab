@@ -1158,6 +1158,10 @@ function plot_data(fig)
     if ~isempty(yl_old)
         ylim(ud.axes, yl_old);
     else
+        % First plot of this dataset: auto-fit Y to the data. With hold on
+        % (kept so the spike ticks survive), plot() no longer auto-rescales,
+        % so request the auto fit explicitly.
+        ylim(ud.axes, 'auto');
         ud.first_plot = false;
         set(fig, 'UserData', ud);
     end
