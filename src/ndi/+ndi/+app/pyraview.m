@@ -687,9 +687,15 @@ function update_spiking_plot(fig)
 
     spacing = ud.channel_y_spacing;
 
-    % Prepare plotting arrays
-    X = [];
-    Y = [];
+    % Accumulate every waveform's line segments grouped by color, then draw
+    % one plot() per color. The previous version issued a separate plot() per
+    % channel per neuron (N units x C channels line objects), which was slow
+    % when many units were selected. NaN rows separate channels and neurons so
+    % a whole color group is a single line object.
+    color_keys = {};  % unique color key strings
+    color_vals = {};  % actual color value per key
+    X_by_color = {};  % accumulated X column per key
+    Y_by_color = {};  % accumulated Y column per key
     text_labels = struct('x', {}, 'y_top', {}, 'y_bot', {}, 'str', {});
 
     % Loop through selected
@@ -718,25 +724,42 @@ function update_spiking_plot(fig)
             color = info.color;
         end
 
-        % Plot channels stacked
-        for c = 1:numChannels
-            offset = (c-1) * spacing;
-
-            % Plot directly to avoid huge array for colors
-            % Optimization: Plot each neuron separately in side panel is fine
-            % But user asked for color grouping
-            % Side panel usually handles individual plots ok since N is small
-
-            plot(sax, t_shifted, waveform(:,c) + offset, 'Color', color);
-            hold(sax, 'on');
+        % Resolve the color group for this neuron
+        if ischar(color)
+            key = color;
+        else
+            key = mat2str(color);
         end
+        ci = find(strcmp(color_keys, key), 1);
+        if isempty(ci)
+            color_keys{end+1} = key; %#ok<AGROW>
+            color_vals{end+1} = color; %#ok<AGROW>
+            X_by_color{end+1} = []; %#ok<AGROW>
+            Y_by_color{end+1} = []; %#ok<AGROW>
+            ci = numel(color_keys);
+        end
+
+        % Build all channels at once: each column is a channel, with a
+        % trailing NaN row so channels/neurons are not connected.
+        offsets = (0:numChannels-1) * spacing;           % 1 x C
+        Xblock = [repmat(t_shifted, 1, numChannels); nan(1, numChannels)];
+        Yblock = [waveform + offsets;                 nan(1, numChannels)];
+        X_by_color{ci} = [X_by_color{ci}; Xblock(:)];
+        Y_by_color{ci} = [Y_by_color{ci}; Yblock(:)];
 
         % Labels
         label_idx = num2str(idx);
-        text_labels(end+1).x = idx;
+        text_labels(end+1).x = idx; %#ok<AGROW>
         text_labels(end).y_top = (numChannels+0.5)*spacing;
         text_labels(end).y_bot = -0.5*spacing;
         text_labels(end).str = label_idx;
+    end
+
+    hold(sax, 'on');
+    for ci = 1:numel(color_keys)
+        if ~isempty(X_by_color{ci})
+            plot(sax, X_by_color{ci}, Y_by_color{ci}, 'Color', color_vals{ci});
+        end
     end
 
     for t = 1:numel(text_labels)
