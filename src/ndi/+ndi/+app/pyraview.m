@@ -619,9 +619,10 @@ function apply_spiking_sort(fig)
 end
 
 function ensure_spike_times_loaded(fig)
-    % Lazily read spike times for the currently selected units, caching the
-    % result so each unit is read at most once. This replaces the previous
-    % behaviour of reading every unit's spike train up front.
+    % Lazily construct the element object and read spike times for the
+    % currently selected units, caching both so each unit is built/read at
+    % most once. This replaces the previous behaviour of reconstructing every
+    % element object and reading every unit's spike train up front.
     ud = get(fig, 'UserData');
     si = ud.spiking_info;
     if isempty(si)
@@ -643,6 +644,17 @@ function ensure_spike_times_loaded(fig)
         if isfield(si, 'times_loaded') && si(idx).times_loaded
             continue;
         end
+
+        % Build the element object on first use (deferred from load time).
+        if isempty(si(idx).element_obj)
+            try
+                si(idx).element_obj = ndi.database.fun.ndi_document2ndi_object(...
+                    si(idx).element_doc, ud.session);
+            catch
+                si(idx).element_obj = [];
+            end
+        end
+
         try
             [~, t] = si(idx).element_obj.readtimeseries(epochid, -Inf, Inf);
             si(idx).spike_times = t;

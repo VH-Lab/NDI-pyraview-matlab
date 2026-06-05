@@ -10,7 +10,8 @@ function spiking_info = load_spiking_neurons(session, probe, epochid)
 %
 %   Outputs:
 %       SPIKING_INFO - Struct array with fields:
-%                      'element_obj' : The NDI element object
+%                      'element_obj' : The NDI element object (empty until
+%                                      constructed lazily on first selection)
 %                      'element_doc' : The NDI element document
 %                      'neuron_doc'  : The associated neuron_extracellular document
 %                      'label'       : Display label
@@ -22,11 +23,12 @@ function spiking_info = load_spiking_neurons(session, probe, epochid)
 %                                      read on demand for a selected unit
 %                      'best_channel': Scalar channel index of max energy
 %
-%   Note: spike times are NOT read here. For populations with hundreds of
-%   units, reading every spike train up front (one readtimeseries per
-%   element) dominates load time, so 'spike_times' is left empty and
-%   'times_loaded' is false. Callers read each unit's spike times on demand
-%   the first time it is selected for display.
+%   Note: for populations with hundreds of units, two operations dominate
+%   load time -- reconstructing each element object (ndi_document2ndi_object)
+%   and reading each unit's spike train (readtimeseries). Neither is done
+%   here. 'element_obj' is left empty and 'spike_times' is left empty with
+%   'times_loaded' false; callers build the object and read the spike times
+%   on demand the first time a unit is selected for display.
 %
 
     arguments
@@ -83,8 +85,6 @@ function spiking_info = load_spiking_neurons(session, probe, epochid)
         el_doc = element_docs{i};
         el_id = el_doc.id();
 
-        el_obj = ndi.database.fun.ndi_document2ndi_object(el_doc, session);
-
         % Find matching neuron doc (O(1) lookup)
         n_doc = [];
         if neuron_map.isKey(el_id)
@@ -116,13 +116,29 @@ function spiking_info = load_spiking_neurons(session, probe, epochid)
             end
         end
 
-        % Spike times are read lazily (on selection), not here -- see the note
-        % in the help above. Reading every unit's train up front was the main
-        % bottleneck when loading hundreds of neurons.
-        name = el_obj.elementstring();
+        % Neither the element object nor the spike times are built here -- see
+        % the note in the help above. Reconstructing every element object
+        % (ndi_document2ndi_object) and reading every unit's train up front were
+        % the two bottlenecks when loading hundreds of neurons. Both are done
+        % lazily, the first time a unit is selected.
+        %
+        % The display name is derived directly from the element document so it
+        % matches ndi.element/elementstring ([name ' | ' int2str(reference)])
+        % without constructing the object.
+        name = '';
+        try
+            el_props = el_doc.document_properties.element;
+            if isfield(el_props, 'reference')
+                name = [el_props.name ' | ' int2str(el_props.reference)];
+            else
+                name = el_props.name;
+            end
+        catch
+            name = el_id;
+        end
         label = sprintf('%d %s Q%d', i, name, quality);
 
-        spiking_info(i).element_obj = el_obj;
+        spiking_info(i).element_obj = []; % constructed lazily on first selection
         spiking_info(i).element_doc = el_doc;
         spiking_info(i).neuron_doc = n_doc;
         spiking_info(i).label = label;
