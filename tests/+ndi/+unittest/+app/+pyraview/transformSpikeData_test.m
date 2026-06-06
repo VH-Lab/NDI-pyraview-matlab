@@ -79,5 +79,31 @@ classdef transformSpikeData_test < matlab.unittest.TestCase
             y2_vals = y2(~isnan(y2));
             testCase.verifyTrue(all(y2_vals >= 140 & y2_vals <= 160), 'Neuron 2 Y values correct');
         end
+
+        function testShowBox(testCase)
+            % With show_box true, a 2 ms wide box spanning low_channel..high_channel
+            % is emitted in addition to the vertical tick.
+            spiking_info = struct();
+            spiking_info(1).spike_times = 20;
+            spiking_info(1).best_channel = 3;
+            spiking_info(1).low_channel = 2;
+            spiking_info(1).high_channel = 5;
+
+            spacing = 100;
+            [X, Y] = ndi.app.pyraview.transformSpikeData(spiking_info, 1, 0, 100, spacing, true);
+
+            % Box corners should be at t +/- 0.001 s (2 ms total width).
+            testCase.verifyTrue(any(abs(X - (20 - 0.001)) < 1e-9), 'Box left edge at t-1ms');
+            testCase.verifyTrue(any(abs(X - (20 + 0.001)) < 1e-9), 'Box right edge at t+1ms');
+
+            % Box vertical extent: (low-1)*spacing = 100 to (high-1)*spacing = 400.
+            yvals = Y(~isnan(Y));
+            testCase.verifyEqual(min(yvals), 100, 'Box bottom at (low_channel-1)*spacing');
+            testCase.verifyEqual(max(yvals), 400, 'Box top at (high_channel-1)*spacing');
+
+            % Without show_box, no box edges appear (only the tick at t=20).
+            [X2, ~] = ndi.app.pyraview.transformSpikeData(spiking_info, 1, 0, 100, spacing);
+            testCase.verifyFalse(any(abs(X2 - (20 - 0.001)) < 1e-9), 'No box when show_box is false');
+        end
     end
 end

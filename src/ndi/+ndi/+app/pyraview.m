@@ -168,19 +168,32 @@ function pyraview(app_options)
              'Position', [0 0 0.6 1], 'Tag', 'SpikingAxes');
         ud.spiking_axes = sax;
 
+        % Waveform X-axis buttons (positions set in on_resize)
+        uicontrol(sf, 'Style', 'pushbutton', 'String', 'Reset X', ...
+             'Units', 'normalized', 'Position', [0.12 0.01 0.22 0.05], ...
+             'Tag', 'SpikingWaveResetX', 'Callback', callbackstr);
+        uicontrol(sf, 'Style', 'pushbutton', 'String', 'Zoom', ...
+             'Units', 'normalized', 'Position', [0.37 0.01 0.22 0.05], ...
+             'Tag', 'SpikingWaveZoom', 'Callback', callbackstr);
+
         % Spiking Title
         uicontrol(sf, 'Style', 'text', 'String', 'Spiking neurons', ...
              'Units', 'normalized', 'Position', [0.6 0.9 0.4 0.1], ...
              'Tag', 'SpikingTitle', 'FontWeight', 'bold');
 
-        % Sort checkbox: by max channel location (else by name)
+        % Sort checkbox: by max channel location (else by name). On by default.
         uicontrol(sf, 'Style', 'checkbox', 'String', 'Sort by max channel', ...
-             'Units', 'normalized', 'Position', [0.62 0.84 0.38 0.05], ...
-             'Tag', 'SpikingSortCheckbox', 'Callback', callbackstr, 'Value', 0);
+             'Units', 'normalized', 'Position', [0.62 0.86 0.38 0.05], ...
+             'Tag', 'SpikingSortCheckbox', 'Callback', callbackstr, 'Value', 1);
+
+        % Show-box checkbox: draw a channel-extent box around each spike
+        uicontrol(sf, 'Style', 'checkbox', 'String', 'Show box', ...
+             'Units', 'normalized', 'Position', [0.62 0.80 0.38 0.05], ...
+             'Tag', 'SpikingBoxCheckbox', 'Callback', callbackstr, 'Value', 0);
 
         % Spiking Listbox
         uicontrol(sf, 'Style', 'listbox', 'String', {}, ...
-             'Units', 'normalized', 'Position', [0.6 0 0.4 0.83], ...
+             'Units', 'normalized', 'Position', [0.6 0 0.4 0.79], ...
              'Tag', 'SpikingList', 'Callback', callbackstr);
 
         % Link Y Axes
@@ -299,6 +312,12 @@ function pyraview(app_options)
                 update_spike_overlay(fig);      % spike tick layer in main axes
             case 'SpikingSortCheckbox'
                 apply_spiking_sort(fig);
+            case 'SpikingBoxCheckbox'
+                update_spike_overlay(fig); % redraw ticks with/without boxes
+            case 'SpikingWaveResetX'
+                waveform_reset_x(fig);
+            case 'SpikingWaveZoom'
+                waveform_zoom_x(fig);
             case 'Scroll1' % Pan
                 update_from_scrollbars(fig, ud, 'Scroll1');
             case 'Scroll2' % Zoom
@@ -872,6 +891,10 @@ function update_spike_overlay(fig)
         end
     end
 
+    % Whether to also draw the channel-extent box around each spike.
+    bc = findobj(fig, 'Tag', 'SpikingBoxCheckbox');
+    show_box = ~isempty(bc) && get(bc, 'Value') == 1;
+
     % Preserve the current view limits; drawing whole-recording ticks must not
     % rescale the axes (which would jump the view).
     xl = get(ax, 'XLim');
@@ -887,8 +910,9 @@ function update_spike_overlay(fig)
         else
             col = key;
         end
-        % Unbounded window -> ticks for the entire recording, drawn once.
-        [sX, sY] = ndi.app.pyraview.transformSpikeData(si, idxs, -Inf, Inf, spacing);
+        % Unbounded window -> ticks (and optional boxes) for the entire
+        % recording, drawn once per color in a single plot call.
+        [sX, sY] = ndi.app.pyraview.transformSpikeData(si, idxs, -Inf, Inf, spacing, show_box);
         if ~isempty(sX)
             plot(ax, sX, sY, 'Color', col, 'LineWidth', 2, 'Tag', 'SpikeTick');
         end
@@ -896,6 +920,51 @@ function update_spike_overlay(fig)
 
     set(ax, 'XLim', xl, 'YLim', yl);
     bring_ticks_to_front(ax);
+end
+
+function waveform_reset_x(fig)
+    % Reset the waveform panel X axis to show all units.
+    ud = get(fig, 'UserData');
+    si = get_spiking_info(fig);
+    n = numel(si);
+    xlim(ud.spiking_axes, [0, max(n, 1) + 1]);
+end
+
+function waveform_zoom_x(fig)
+    % Zoom the waveform panel X axis to the selected units whose maximum
+    % channel is currently visible in the main data Y view. The waveform panel
+    % plots each unit at x = its index, so we set the X limits to span the
+    % indices of those units.
+    ud = get(fig, 'UserData');
+    si = get_spiking_info(fig);
+    if isempty(si)
+        return;
+    end
+
+    lb = findobj(fig, 'Tag', 'SpikingList');
+    sel = get(lb, 'Value');
+    if isempty(sel)
+        return;
+    end
+
+    spacing = ud.channel_y_spacing;
+    yl = get(ud.axes, 'YLim'); % visible channel range in the main data view
+
+    visible = [];
+    for k = 1:numel(sel)
+        idx = sel(k);
+        if idx > numel(si), continue; end
+        y_best = (si(idx).best_channel - 1) * spacing;
+        if y_best >= yl(1) && y_best <= yl(2)
+            visible(end+1) = idx; %#ok<AGROW>
+        end
+    end
+
+    if isempty(visible)
+        return; % nothing visible to zoom to; leave the view unchanged
+    end
+
+    xlim(ud.spiking_axes, [min(visible) - 0.6, max(visible) + 0.6]);
 end
 
 function update_spacing(fig)
@@ -1326,6 +1395,9 @@ function on_resize(fig)
         slb = findobj(sf, 'Tag', 'SpikingList');
         stt = findobj(sf, 'Tag', 'SpikingTitle');
         ssc = findobj(sf, 'Tag', 'SpikingSortCheckbox');
+        sbc = findobj(sf, 'Tag', 'SpikingBoxCheckbox');
+        brx = findobj(sf, 'Tag', 'SpikingWaveResetX');
+        bzm = findobj(sf, 'Tag', 'SpikingWaveZoom');
 
         % Spiking Axes on Left 60% of Spiking Frame
         % Align bottom/top to MainAxes relative to Frame Height
@@ -1333,14 +1405,21 @@ function on_resize(fig)
         spiking_ax_pos = [0.1, main_ax_pos(2), 0.5, main_ax_pos(4)];
         set(sax, 'Position', spiking_ax_pos);
 
+        % Waveform X-axis buttons in the gap just below the waveform axes.
+        wave_btn_h = 0.05;
+        wave_btn_y = max(0.01, main_ax_pos(2) - wave_btn_h - 0.01);
+        set(brx, 'Position', [0.12, wave_btn_y, 0.22, wave_btn_h]);
+        set(bzm, 'Position', [0.37, wave_btn_y, 0.22, wave_btn_h]);
+
         % Title
-        set(stt, 'Position', [0.65, 0.9, 0.35, 0.1]);
+        set(stt, 'Position', [0.65, 0.92, 0.35, 0.07]);
 
-        % Sort checkbox under the title
-        set(ssc, 'Position', [0.65, 0.85, 0.35, 0.05]);
+        % Sort and show-box checkboxes under the title
+        set(ssc, 'Position', [0.65, 0.86, 0.35, 0.05]);
+        set(sbc, 'Position', [0.65, 0.80, 0.35, 0.05]);
 
-        % Listbox on Right, below the checkbox
-        set(slb, 'Position', [0.65, 0, 0.35, 0.84]);
+        % Listbox on Right, below the checkboxes
+        set(slb, 'Position', [0.65, 0, 0.35, 0.79]);
     end
 
     update_view(fig);

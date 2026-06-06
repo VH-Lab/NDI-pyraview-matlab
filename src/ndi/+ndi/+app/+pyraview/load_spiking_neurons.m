@@ -22,6 +22,10 @@ function spiking_info = load_spiking_neurons(session, probe, epochid)
 %                      'times_loaded': Logical; false until spike_times have been
 %                                      read on demand for a selected unit
 %                      'best_channel': Scalar channel index of max energy
+%                      'low_channel' : Lowest channel index whose mean-waveform
+%                                      peak-to-peak amplitude is >= 10% of the
+%                                      maximum across channels
+%                      'high_channel': Highest such channel index
 %
 %   Note: for populations with hundreds of units, two operations dominate
 %   load time -- reconstructing each element object (ndi_document2ndi_object)
@@ -39,7 +43,8 @@ function spiking_info = load_spiking_neurons(session, probe, epochid)
 
     spiking_info = struct('element_obj', {}, 'element_doc', {}, 'neuron_doc', {}, ...
                           'label', {}, 'name', {}, 'quality', {}, ...
-                          'spike_times', {}, 'times_loaded', {}, 'best_channel', {});
+                          'spike_times', {}, 'times_loaded', {}, 'best_channel', {}, ...
+                          'low_channel', {}, 'high_channel', {});
 
     % 1. Find all spike elements for this probe
     Q1 = ndi.query('element.type', 'exact_string', 'spikes');
@@ -93,6 +98,8 @@ function spiking_info = load_spiking_neurons(session, probe, epochid)
 
         quality = 0;
         best_ch = 1; % Default
+        low_ch = 1;  % Lowest channel with a significant waveform peak
+        high_ch = 1; % Highest channel with a significant waveform peak
 
         if ~isempty(n_doc)
             % Extract Quality
@@ -103,7 +110,8 @@ function spiking_info = load_spiking_neurons(session, probe, epochid)
                    quality = n_doc.document_properties.neuron_extracellular.quality;
                end
 
-               % Calculate Best Channel (Max Energy)
+               % Calculate Best Channel (Max Energy) and the span of channels
+               % carrying a significant part of the waveform.
                if isfield(n_doc.document_properties.neuron_extracellular, 'mean_waveform')
                    w = n_doc.document_properties.neuron_extracellular.mean_waveform;
                    % w is Samples x Channels
@@ -111,6 +119,19 @@ function spiking_info = load_spiking_neurons(session, probe, epochid)
                    E = sum(w.^2, 1);
                    if ~isempty(E)
                        [~, best_ch] = max(E);
+                   end
+
+                   % Per-channel peak-to-peak amplitude. The box drawn for
+                   % each spike spans from the lowest to the highest channel
+                   % whose peak is at least 10% of the maximum channel peak.
+                   ch_amp = max(w, [], 1) - min(w, [], 1); % 1 x Channels
+                   max_amp = max(ch_amp);
+                   if ~isempty(max_amp) && max_amp > 0
+                       signif = find(ch_amp >= 0.10 * max_amp);
+                       if ~isempty(signif)
+                           low_ch = min(signif);
+                           high_ch = max(signif);
+                       end
                    end
                end
             end
@@ -147,5 +168,7 @@ function spiking_info = load_spiking_neurons(session, probe, epochid)
         spiking_info(i).spike_times = [];
         spiking_info(i).times_loaded = false;
         spiking_info(i).best_channel = best_ch;
+        spiking_info(i).low_channel = low_ch;
+        spiking_info(i).high_channel = high_ch;
     end
 end
