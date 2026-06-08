@@ -54,7 +54,10 @@ function pyraview(app_options)
         ud.view_t0 = 0; % Start of current view
         ud.view_duration = 1; % Duration of current view
         ud.channel_y_spacing = 100; % Default spacing
-        ud.spiking_info = struct('element_obj', {}, 'neuron_doc', {}, 'label', {}, 'color', {}); % Store spiking info
+        % Spiking info is kept in appdata, not UserData, so the large struct
+        % (hundreds of documents + waveforms) is not copied on every
+        % get/set(fig,'UserData') during panning. See get/set_spiking_info.
+        set_spiking_info(fig, get_spiking_info(fig)); % initialize empty
         ud.first_plot = true; % Flag for first plot
         ud.split_position = 0.8; % Default split position (80% for Main)
         ud.dragging = false;
@@ -165,14 +168,32 @@ function pyraview(app_options)
              'Position', [0 0 0.6 1], 'Tag', 'SpikingAxes');
         ud.spiking_axes = sax;
 
+        % Waveform X-axis buttons (positions set in on_resize)
+        uicontrol(sf, 'Style', 'pushbutton', 'String', 'Reset X', ...
+             'Units', 'normalized', 'Position', [0.12 0.01 0.22 0.05], ...
+             'Tag', 'SpikingWaveResetX', 'Callback', callbackstr);
+        uicontrol(sf, 'Style', 'pushbutton', 'String', 'Zoom', ...
+             'Units', 'normalized', 'Position', [0.37 0.01 0.22 0.05], ...
+             'Tag', 'SpikingWaveZoom', 'Callback', callbackstr);
+
         % Spiking Title
         uicontrol(sf, 'Style', 'text', 'String', 'Spiking neurons', ...
              'Units', 'normalized', 'Position', [0.6 0.9 0.4 0.1], ...
              'Tag', 'SpikingTitle', 'FontWeight', 'bold');
 
+        % Sort checkbox: by max channel location (else by name). On by default.
+        uicontrol(sf, 'Style', 'checkbox', 'String', 'Sort by max channel', ...
+             'Units', 'normalized', 'Position', [0.62 0.86 0.38 0.05], ...
+             'Tag', 'SpikingSortCheckbox', 'Callback', callbackstr, 'Value', 1);
+
+        % Show-box checkbox: draw a channel-extent box around each spike
+        uicontrol(sf, 'Style', 'checkbox', 'String', 'Show box', ...
+             'Units', 'normalized', 'Position', [0.62 0.80 0.38 0.05], ...
+             'Tag', 'SpikingBoxCheckbox', 'Callback', callbackstr, 'Value', 0);
+
         % Spiking Listbox
         uicontrol(sf, 'Style', 'listbox', 'String', {}, ...
-             'Units', 'normalized', 'Position', [0.6 0 0.4 0.9], ...
+             'Units', 'normalized', 'Position', [0.6 0 0.4 0.79], ...
              'Tag', 'SpikingList', 'Callback', callbackstr);
 
         % Link Y Axes
@@ -263,27 +284,31 @@ function pyraview(app_options)
                     if ~isempty(ud.probes) && probe_idx <= numel(ud.probes) && ~strcmp(epoch_str, ' ')
                         probe = ud.probes{probe_idx};
 
-                        % Load and process colors
+                        % Colors are assigned in sort_spiking_info (via
+                        % update_spiking_list_ui) so every load path is covered.
                         spiking_info = ndi.app.pyraview.load_spiking_neurons(ud.session, probe, epoch_str);
 
-                        % Assign Colors Grouped by Best Channel
-                        if ~isempty(spiking_info)
-                            color_cycle = {'k', 'm', 'b', 'g', [1 0.5 0], 'r'};
-
-                            for k = 1:numel(spiking_info)
-                                color_idx = mod(k-1, numel(color_cycle)) + 1;
-                                spiking_info(k).color = color_cycle{color_idx};
-                            end
-                        end
-
-                        ud.spiking_info = spiking_info;
+                        ud.spiking_epochid = epoch_str; % needed for lazy spike-time reads
                         set(fig, 'UserData', ud);
+                        set_spiking_info(fig, spiking_info);
                         update_spiking_list_ui(fig);
                     end
+                else
+                    % Hiding the spiking panel: remove the tick layer too.
+                    delete(findobj(ud.axes, 'Tag', 'SpikeTick'));
                 end
             case 'SpikingList'
-                update_spiking_plot(fig);
-                plot_data(fig); % Re-plot main axes to show spikes overlay
+                ensure_spike_times_loaded(fig); % load times for newly selected units
+                update_spiking_plot(fig);       % waveform side panel
+                update_spike_overlay(fig);      % spike tick layer in main axes
+            case 'SpikingSortCheckbox'
+                apply_spiking_sort(fig);
+            case 'SpikingBoxCheckbox'
+                update_spike_overlay(fig); % redraw ticks with/without boxes
+            case 'SpikingWaveResetX'
+                waveform_reset_x(fig);
+            case 'SpikingWaveZoom'
+                waveform_zoom_x(fig);
             case 'Scroll1' % Pan
                 update_from_scrollbars(fig, ud, 'Scroll1');
             case 'Scroll2' % Zoom
@@ -493,29 +518,197 @@ function check_and_load(fig)
     % Check for spiking
     cb = findobj(fig, 'Tag', 'SpikingCheckbox');
     if get(cb, 'Value')
-        ud.spiking_info = ndi.app.pyraview.load_spiking_neurons(ud.session, probe, epoch_str);
+        si = ndi.app.pyraview.load_spiking_neurons(ud.session, probe, epoch_str);
+        ud.spiking_epochid = epoch_str; % needed for lazy spike-time reads
         set(fig, 'UserData', ud);
+        set_spiking_info(fig, si);
         update_spiking_list_ui(fig);
     end
 end
 
 function update_spiking_list_ui(fig)
-    ud = get(fig, 'UserData');
-    spiking_info = ud.spiking_info;
+    % Sort the units according to the sort checkbox before displaying them.
+    cb = findobj(fig, 'Tag', 'SpikingSortCheckbox');
+    by_channel = ~isempty(cb) && get(cb, 'Value') == 1;
+    spiking_info = sort_spiking_info(get_spiking_info(fig), by_channel);
+    set_spiking_info(fig, spiking_info);
 
     strs = {spiking_info.label};
 
     lb = findobj(fig, 'Tag', 'SpikingList');
     set(lb, 'String', strs);
     set(lb, 'Max', max(2, numel(strs))); % Allow multiple selection
-    if ~isempty(strs)
-        set(lb, 'Value', 1:numel(strs));
-    else
+
+    % Default the units to off when there are many of them. Loading and
+    % plotting spike times happens lazily on selection, so leaving a large
+    % population unselected keeps opening the panel fast.
+    if isempty(strs) || numel(strs) > 20
         set(lb, 'Value', []);
+    else
+        set(lb, 'Value', 1:numel(strs));
     end
 
+    ensure_spike_times_loaded(fig); % read times for any default-selected units
+    update_spiking_plot(fig);       % waveform side panel
+    update_spike_overlay(fig);      % spike tick layer in main axes
+end
+
+function si = sort_spiking_info(si, by_channel)
+    % Reorder the spiking_info struct array. When BY_CHANNEL is true, sort by
+    % best (maximum-energy) channel location; otherwise sort by unit name.
+    % Labels are renumbered to match the new display order.
+    if isempty(si)
+        return;
+    end
+
+    if by_channel
+        % Descending so that, matching the viewer's channel layout, the
+        % smallest channel ends up last in the list.
+        keys = [si.best_channel];
+        [~, order] = sort(keys, 'descend');
+    else
+        names = cell(1, numel(si));
+        for k = 1:numel(si)
+            if isfield(si, 'name') && ~isempty(si(k).name)
+                names{k} = si(k).name;
+            else
+                names{k} = si(k).label;
+            end
+        end
+        [~, order] = sort(lower(names));
+    end
+
+    si = si(order);
+
+    % Renumber the leading index in each label to match the displayed order,
+    % and assign a cycling color so neighbouring units (adjacent channels when
+    % sorted by channel) are easy to tell apart. Doing it here means every load
+    % path (checkbox toggle and check_and_load) gets colors.
+    color_cycle = {'k', 'm', 'b', 'g', [1 0.5 0], 'r'};
+    for k = 1:numel(si)
+        q = 0;
+        if isfield(si, 'quality') && ~isempty(si(k).quality)
+            q = si(k).quality;
+        end
+        nm = '';
+        if isfield(si, 'name') && ~isempty(si(k).name)
+            nm = si(k).name;
+        end
+        si(k).label = sprintf('%d %s Q%d', k, nm, q);
+        si(k).color = color_cycle{mod(k-1, numel(color_cycle)) + 1};
+    end
+end
+
+function apply_spiking_sort(fig)
+    % Re-sort the unit list when the sort checkbox is toggled, preserving the
+    % current selection (matched by element id since indices change on sort).
+    si = get_spiking_info(fig);
+    if isempty(si)
+        return;
+    end
+
+    lb = findobj(fig, 'Tag', 'SpikingList');
+    sel = get(lb, 'Value');
+    sel_ids = {};
+    for k = 1:numel(sel)
+        if sel(k) <= numel(si)
+            sel_ids{end+1} = si(sel(k)).element_doc.id(); %#ok<AGROW>
+        end
+    end
+
+    cb = findobj(fig, 'Tag', 'SpikingSortCheckbox');
+    by_channel = ~isempty(cb) && get(cb, 'Value') == 1;
+    si = sort_spiking_info(si, by_channel);
+    set_spiking_info(fig, si);
+
+    % Restore selection by element id.
+    new_sel = [];
+    for k = 1:numel(si)
+        if any(strcmp(si(k).element_doc.id(), sel_ids))
+            new_sel(end+1) = k; %#ok<AGROW>
+        end
+    end
+    set(lb, 'String', {si.label});
+    set(lb, 'Max', max(2, numel(si)));
+    set(lb, 'Value', new_sel);
+
+    ensure_spike_times_loaded(fig);
     update_spiking_plot(fig);
-    plot_data(fig); % Update main plot to include spikes
+    update_spike_overlay(fig);
+end
+
+function ensure_spike_times_loaded(fig)
+    % Lazily construct the element object and read spike times for the
+    % currently selected units, caching both so each unit is built/read at
+    % most once. This replaces the previous behaviour of reconstructing every
+    % element object and reading every unit's spike train up front.
+    ud = get(fig, 'UserData');
+    si = get_spiking_info(fig);
+    if isempty(si)
+        return;
+    end
+
+    if ~isfield(ud, 'spiking_epochid') || isempty(ud.spiking_epochid)
+        return;
+    end
+    epochid = ud.spiking_epochid;
+
+    lb = findobj(fig, 'Tag', 'SpikingList');
+    sel = get(lb, 'Value');
+
+    % Determine which selected units still need their object built and spike
+    % times read, so the progress bar is shown only when there is real work.
+    needIdx = [];
+    for k = 1:numel(sel)
+        idx = sel(k);
+        if idx > numel(si), continue; end
+        if isfield(si, 'times_loaded') && si(idx).times_loaded
+            continue;
+        end
+        needIdx(end+1) = idx; %#ok<AGROW>
+    end
+
+    if isempty(needIdx)
+        return;
+    end
+
+    % Progress bar: units are read one at a time (object construction +
+    % readtimeseries) and this can be slow for many newly selected units.
+    pb_fig = figure('Name', 'Loading Spiking Neurons', 'NumberTitle', 'off', ...
+        'MenuBar', 'none', 'ToolBar', 'none', 'Resize', 'off', ...
+        'Position', [500 500 520 80]);
+    pb = ndi.gui.component.NDIProgressBar('Parent', pb_fig, ...
+        'Message', 'Loading...', 'Text', 'Loading spike times...');
+    cleanupObj = onCleanup(@() delete(pb_fig)); %#ok<NASGU>
+
+    nNeed = numel(needIdx);
+    for k = 1:nNeed
+        idx = needIdx(k);
+
+        pb.Value = k / nNeed;
+        pb.Message = sprintf('Loading unit %d of %d...', k, nNeed);
+        drawnow;
+
+        % Build the element object on first use (deferred from load time).
+        if isempty(si(idx).element_obj)
+            try
+                si(idx).element_obj = ndi.database.fun.ndi_document2ndi_object(...
+                    si(idx).element_doc, ud.session);
+            catch
+                si(idx).element_obj = [];
+            end
+        end
+
+        try
+            [~, t] = si(idx).element_obj.readtimeseries(epochid, -Inf, Inf);
+            si(idx).spike_times = t;
+        catch
+            si(idx).spike_times = [];
+        end
+        si(idx).times_loaded = true;
+    end
+
+    set_spiking_info(fig, si);
 end
 
 function update_spiking_plot(fig)
@@ -523,7 +716,7 @@ function update_spiking_plot(fig)
     lb = findobj(fig, 'Tag', 'SpikingList');
 
     selectedIdx = get(lb, 'Value');
-    spiking_info = ud.spiking_info;
+    spiking_info = get_spiking_info(fig);
 
     sax = ud.spiking_axes;
     cla(sax);
@@ -534,9 +727,15 @@ function update_spiking_plot(fig)
 
     spacing = ud.channel_y_spacing;
 
-    % Prepare plotting arrays
-    X = [];
-    Y = [];
+    % Accumulate every waveform's line segments grouped by color, then draw
+    % one plot() per color. The previous version issued a separate plot() per
+    % channel per neuron (N units x C channels line objects), which was slow
+    % when many units were selected. NaN rows separate channels and neurons so
+    % a whole color group is a single line object.
+    color_keys = {};  % unique color key strings
+    color_vals = {};  % actual color value per key
+    X_by_color = {};  % accumulated X column per key
+    Y_by_color = {};  % accumulated Y column per key
     text_labels = struct('x', {}, 'y_top', {}, 'y_bot', {}, 'str', {});
 
     % Loop through selected
@@ -565,25 +764,42 @@ function update_spiking_plot(fig)
             color = info.color;
         end
 
-        % Plot channels stacked
-        for c = 1:numChannels
-            offset = (c-1) * spacing;
-
-            % Plot directly to avoid huge array for colors
-            % Optimization: Plot each neuron separately in side panel is fine
-            % But user asked for color grouping
-            % Side panel usually handles individual plots ok since N is small
-
-            plot(sax, t_shifted, waveform(:,c) + offset, 'Color', color);
-            hold(sax, 'on');
+        % Resolve the color group for this neuron
+        if ischar(color)
+            key = color;
+        else
+            key = mat2str(color);
         end
+        ci = find(strcmp(color_keys, key), 1);
+        if isempty(ci)
+            color_keys{end+1} = key; %#ok<AGROW>
+            color_vals{end+1} = color; %#ok<AGROW>
+            X_by_color{end+1} = []; %#ok<AGROW>
+            Y_by_color{end+1} = []; %#ok<AGROW>
+            ci = numel(color_keys);
+        end
+
+        % Build all channels at once: each column is a channel, with a
+        % trailing NaN row so channels/neurons are not connected.
+        offsets = (0:numChannels-1) * spacing;           % 1 x C
+        Xblock = [repmat(t_shifted, 1, numChannels); nan(1, numChannels)];
+        Yblock = [waveform + offsets;                 nan(1, numChannels)];
+        X_by_color{ci} = [X_by_color{ci}; Xblock(:)];
+        Y_by_color{ci} = [Y_by_color{ci}; Yblock(:)];
 
         % Labels
         label_idx = num2str(idx);
-        text_labels(end+1).x = idx;
+        text_labels(end+1).x = idx; %#ok<AGROW>
         text_labels(end).y_top = (numChannels+0.5)*spacing;
         text_labels(end).y_bot = -0.5*spacing;
         text_labels(end).str = label_idx;
+    end
+
+    hold(sax, 'on');
+    for ci = 1:numel(color_keys)
+        if ~isempty(X_by_color{ci})
+            plot(sax, X_by_color{ci}, Y_by_color{ci}, 'Color', color_vals{ci});
+        end
     end
 
     for t = 1:numel(text_labels)
@@ -593,6 +809,161 @@ function update_spiking_plot(fig)
     hold(sax, 'off');
 
     xlim(sax, [0, max(numel(spiking_info), 1) + 1]);
+end
+
+function si = get_spiking_info(fig)
+    % Spiking info lives in appdata (not UserData) so the large struct is not
+    % copied on every get/set(fig,'UserData') on the pan/zoom hot path.
+    si = getappdata(fig, 'spiking_info');
+    if isempty(si)
+        si = struct('element_obj', {}, 'element_doc', {}, 'neuron_doc', {}, ...
+                    'label', {}, 'name', {}, 'quality', {}, ...
+                    'spike_times', {}, 'times_loaded', {}, 'best_channel', {}, ...
+                    'low_channel', {}, 'high_channel', {}, 'color', {});
+    end
+end
+
+function set_spiking_info(fig, si)
+    setappdata(fig, 'spiking_info', si);
+end
+
+function bring_ticks_to_front(ax)
+    % Move the spike tick line objects to the front of the axes' child stack
+    % (drawn on top of the data traces). Axes child index 1 is topmost.
+    ch = get(ax, 'Children');
+    if numel(ch) < 2
+        return;
+    end
+    tags = get(ch, 'Tag');
+    if ~iscell(tags)
+        tags = {tags};
+    end
+    isTick = strcmp(tags, 'SpikeTick');
+    if any(isTick) && ~all(isTick)
+        set(ax, 'Children', [ch(isTick); ch(~isTick)]);
+    end
+end
+
+function update_spike_overlay(fig)
+    % Draw spike ticks for the *entire recording* into the main trace axes,
+    % one solid line per color group, on top of the data. This runs only when
+    % the selection (or channel spacing) changes. Pan and zoom move the
+    % viewport over these static ticks via xlim/ylim, with no redraw: the
+    % per-pan main-trace replot deletes only its own 'MainTrace' objects and
+    % raises the ticks back to the front (see plot_data / bring_ticks_to_front).
+    ud = get(fig, 'UserData');
+    ax = ud.axes;
+
+    % Remove any previous tick layer.
+    delete(findobj(ax, 'Tag', 'SpikeTick'));
+
+    si = get_spiking_info(fig);
+    lb = findobj(fig, 'Tag', 'SpikingList');
+    if isempty(lb) || isempty(si)
+        return;
+    end
+    selectedIdx = get(lb, 'Value');
+    if isempty(selectedIdx)
+        return;
+    end
+
+    spacing = ud.channel_y_spacing;
+
+    % Group selected units by color so each color is a single line object.
+    groups = containers.Map();
+    for idx = selectedIdx
+        if idx > numel(si), continue; end
+        info = si(idx);
+        col = 'k';
+        if isfield(info, 'color') && ~isempty(info.color)
+            col = info.color;
+        end
+        if ischar(col)
+            key = col;
+        else
+            key = mat2str(col);
+        end
+        if ~isKey(groups, key)
+            groups(key) = idx;
+        else
+            groups(key) = [groups(key), idx];
+        end
+    end
+
+    % Whether to also draw the channel-extent box around each spike.
+    bc = findobj(fig, 'Tag', 'SpikingBoxCheckbox');
+    show_box = ~isempty(bc) && get(bc, 'Value') == 1;
+
+    % Preserve the current view limits; drawing whole-recording ticks must not
+    % rescale the axes (which would jump the view).
+    xl = get(ax, 'XLim');
+    yl = get(ax, 'YLim');
+
+    hold(ax, 'on');
+    keys = groups.keys;
+    for i = 1:numel(keys)
+        key = keys{i};
+        idxs = groups(key);
+        if key(1) == '['
+            col = eval(key);
+        else
+            col = key;
+        end
+        % Unbounded window -> ticks (and optional boxes) for the entire
+        % recording, drawn once per color in a single plot call.
+        [sX, sY] = ndi.app.pyraview.transformSpikeData(si, idxs, -Inf, Inf, spacing, show_box);
+        if ~isempty(sX)
+            plot(ax, sX, sY, 'Color', col, 'LineWidth', 2, 'Tag', 'SpikeTick');
+        end
+    end
+
+    set(ax, 'XLim', xl, 'YLim', yl);
+    bring_ticks_to_front(ax);
+end
+
+function waveform_reset_x(fig)
+    % Reset the waveform panel X axis to show all units.
+    ud = get(fig, 'UserData');
+    si = get_spiking_info(fig);
+    n = numel(si);
+    xlim(ud.spiking_axes, [0, max(n, 1) + 1]);
+end
+
+function waveform_zoom_x(fig)
+    % Zoom the waveform panel X axis to the selected units whose maximum
+    % channel is currently visible in the main data Y view. The waveform panel
+    % plots each unit at x = its index, so we set the X limits to span the
+    % indices of those units.
+    ud = get(fig, 'UserData');
+    si = get_spiking_info(fig);
+    if isempty(si)
+        return;
+    end
+
+    lb = findobj(fig, 'Tag', 'SpikingList');
+    sel = get(lb, 'Value');
+    if isempty(sel)
+        return;
+    end
+
+    spacing = ud.channel_y_spacing;
+    yl = get(ud.axes, 'YLim'); % visible channel range in the main data view
+
+    visible = [];
+    for k = 1:numel(sel)
+        idx = sel(k);
+        if idx > numel(si), continue; end
+        y_best = (si(idx).best_channel - 1) * spacing;
+        if y_best >= yl(1) && y_best <= yl(2)
+            visible(end+1) = idx; %#ok<AGROW>
+        end
+    end
+
+    if isempty(visible)
+        return; % nothing visible to zoom to; leave the view unchanged
+    end
+
+    xlim(ud.spiking_axes, [min(visible) - 0.6, max(visible) + 0.6]);
 end
 
 function update_spacing(fig)
@@ -608,9 +979,10 @@ function update_spacing(fig)
     set(fig, 'UserData', ud);
     plot_data(fig); % Re-plot without reloading data
 
-    % Update spiking plot if visible
+    % Update spiking plot if visible (spacing changes the tick Y positions too)
     if strcmp(get(findobj(fig, 'Tag', 'SpikingFrame'), 'Visible'), 'on')
         update_spiking_plot(fig);
+        update_spike_overlay(fig);
     end
 end
 
@@ -852,65 +1224,21 @@ function plot_data(fig)
     % Pass mapping to transform function
     [X, Y] = ndi.app.pyraview.transformPlotData(data, tVec, level, spacing, mapping);
 
-    plot(ud.axes, X, Y);
+    % Replace only the previous main traces, leaving any spike tick objects
+    % (Tag 'SpikeTick') in place. The ticks are drawn once per selection by
+    % update_spike_overlay and must survive the per-pan trace replot.
+    %
+    % Draw the data in an explicit blue: with hold on (needed to preserve the
+    % ticks) plot() does not reset the color order, so without this the trace
+    % colour would advance on every pan/zoom redraw.
+    delete(findobj(ud.axes, 'Tag', 'MainTrace'));
     hold(ud.axes, 'on');
+    h_main = plot(ud.axes, X, Y, 'Color', [0 0.4470 0.7410]);
+    set(h_main, 'Tag', 'MainTrace');
 
-    % Plot Spikes if available
-    lb = findobj(fig, 'Tag', 'SpikingList');
-    if ~isempty(lb) && ~isempty(ud.spiking_info)
-        selectedIdx = get(lb, 'Value');
-        if ~isempty(selectedIdx)
-            % Group by Color
-            % Extract colors for selected indices
-            % Since color is string or array, tricky to use 'unique' directly if mixed
-            % But we used standard set.
-            % Map color to string key for grouping
+    % Keep the tick layer drawn on top of the freshly added traces.
+    bring_ticks_to_front(ud.axes);
 
-            groups = containers.Map();
-
-            for idx = selectedIdx
-                if idx > numel(ud.spiking_info), continue; end
-                info = ud.spiking_info(idx);
-
-                col = 'k';
-                if isfield(info, 'color') && ~isempty(info.color)
-                    col = info.color;
-                end
-
-                % Convert to key
-                if ischar(col)
-                    key = col;
-                else
-                    key = mat2str(col);
-                end
-
-                if ~isKey(groups, key)
-                    groups(key) = idx;
-                else
-                    groups(key) = [groups(key), idx];
-                end
-            end
-
-            keys = groups.keys;
-            for i = 1:numel(keys)
-                key = keys{i};
-                idxs = groups(key);
-
-                % Recover color from key or first item
-                % Simplest: use key if char, else eval
-                if key(1) == '['
-                    col = eval(key);
-                else
-                    col = key;
-                end
-
-                [sX, sY] = ndi.app.pyraview.transformSpikeData(ud.spiking_info, idxs, ud.view_t0, ud.view_t0 + ud.view_duration, spacing);
-                if ~isempty(sX)
-                    plot(ud.axes, sX, sY, 'Color', col, 'LineWidth', 2);
-                end
-            end
-        end
-    end
     hold(ud.axes, 'off');
 
     % Restore X limits
@@ -920,6 +1248,10 @@ function plot_data(fig)
     if ~isempty(yl_old)
         ylim(ud.axes, yl_old);
     else
+        % First plot of this dataset: auto-fit Y to the data. With hold on
+        % (kept so the spike ticks survive), plot() no longer auto-rescales,
+        % so request the auto fit explicitly.
+        ylim(ud.axes, 'auto');
         ud.first_plot = false;
         set(fig, 'UserData', ud);
     end
@@ -1061,6 +1393,10 @@ function on_resize(fig)
         sax = findobj(sf, 'Tag', 'SpikingAxes');
         slb = findobj(sf, 'Tag', 'SpikingList');
         stt = findobj(sf, 'Tag', 'SpikingTitle');
+        ssc = findobj(sf, 'Tag', 'SpikingSortCheckbox');
+        sbc = findobj(sf, 'Tag', 'SpikingBoxCheckbox');
+        brx = findobj(sf, 'Tag', 'SpikingWaveResetX');
+        bzm = findobj(sf, 'Tag', 'SpikingWaveZoom');
 
         % Spiking Axes on Left 60% of Spiking Frame
         % Align bottom/top to MainAxes relative to Frame Height
@@ -1068,11 +1404,22 @@ function on_resize(fig)
         spiking_ax_pos = [0.1, main_ax_pos(2), 0.5, main_ax_pos(4)];
         set(sax, 'Position', spiking_ax_pos);
 
-        % Listbox on Right
-        set(slb, 'Position', [0.65, 0, 0.35, 0.9]);
+        % Waveform X-axis buttons in the gap just below the waveform axes.
+        % Half the previous height, keeping the same bottom edge.
+        wave_btn_h = 0.025;
+        wave_btn_y = max(0.01, main_ax_pos(2) - 0.06);
+        set(brx, 'Position', [0.12, wave_btn_y, 0.22, wave_btn_h]);
+        set(bzm, 'Position', [0.37, wave_btn_y, 0.22, wave_btn_h]);
 
         % Title
-        set(stt, 'Position', [0.65, 0.9, 0.35, 0.1]);
+        set(stt, 'Position', [0.65, 0.92, 0.35, 0.07]);
+
+        % Sort and show-box checkboxes under the title
+        set(ssc, 'Position', [0.65, 0.86, 0.35, 0.05]);
+        set(sbc, 'Position', [0.65, 0.80, 0.35, 0.05]);
+
+        % Listbox on Right, below the checkboxes
+        set(slb, 'Position', [0.65, 0, 0.35, 0.79]);
     end
 
     update_view(fig);
