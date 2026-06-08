@@ -284,18 +284,9 @@ function pyraview(app_options)
                     if ~isempty(ud.probes) && probe_idx <= numel(ud.probes) && ~strcmp(epoch_str, ' ')
                         probe = ud.probes{probe_idx};
 
-                        % Load and process colors
+                        % Colors are assigned in sort_spiking_info (via
+                        % update_spiking_list_ui) so every load path is covered.
                         spiking_info = ndi.app.pyraview.load_spiking_neurons(ud.session, probe, epoch_str);
-
-                        % Assign Colors Grouped by Best Channel
-                        if ~isempty(spiking_info)
-                            color_cycle = {'k', 'm', 'b', 'g', [1 0.5 0], 'r'};
-
-                            for k = 1:numel(spiking_info)
-                                color_idx = mod(k-1, numel(color_cycle)) + 1;
-                                spiking_info(k).color = color_cycle{color_idx};
-                            end
-                        end
 
                         ud.spiking_epochid = epoch_str; % needed for lazy spike-time reads
                         set(fig, 'UserData', ud);
@@ -589,7 +580,11 @@ function si = sort_spiking_info(si, by_channel)
 
     si = si(order);
 
-    % Renumber the leading index in each label to match the displayed order.
+    % Renumber the leading index in each label to match the displayed order,
+    % and assign a cycling color so neighbouring units (adjacent channels when
+    % sorted by channel) are easy to tell apart. Doing it here means every load
+    % path (checkbox toggle and check_and_load) gets colors.
+    color_cycle = {'k', 'm', 'b', 'g', [1 0.5 0], 'r'};
     for k = 1:numel(si)
         q = 0;
         if isfield(si, 'quality') && ~isempty(si(k).quality)
@@ -600,6 +595,7 @@ function si = sort_spiking_info(si, by_channel)
             nm = si(k).name;
         end
         si(k).label = sprintf('%d %s Q%d', k, nm, q);
+        si(k).color = color_cycle{mod(k-1, numel(color_cycle)) + 1};
     end
 end
 
@@ -822,7 +818,8 @@ function si = get_spiking_info(fig)
     if isempty(si)
         si = struct('element_obj', {}, 'element_doc', {}, 'neuron_doc', {}, ...
                     'label', {}, 'name', {}, 'quality', {}, ...
-                    'spike_times', {}, 'times_loaded', {}, 'best_channel', {});
+                    'spike_times', {}, 'times_loaded', {}, 'best_channel', {}, ...
+                    'low_channel', {}, 'high_channel', {}, 'color', {});
     end
 end
 
