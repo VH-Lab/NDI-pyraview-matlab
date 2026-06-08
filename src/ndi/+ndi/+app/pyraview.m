@@ -571,8 +571,10 @@ function si = sort_spiking_info(si, by_channel)
     end
 
     if by_channel
+        % Descending so that, matching the viewer's channel layout, the
+        % smallest channel ends up last in the list.
         keys = [si.best_channel];
-        [~, order] = sort(keys, 'ascend');
+        [~, order] = sort(keys, 'descend');
     else
         names = cell(1, numel(si));
         for k = 1:numel(si)
