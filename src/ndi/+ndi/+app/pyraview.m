@@ -1408,8 +1408,9 @@ function on_resize(fig)
         set(sax, 'Position', spiking_ax_pos);
 
         % Waveform X-axis buttons in the gap just below the waveform axes.
-        wave_btn_h = 0.05;
-        wave_btn_y = max(0.01, main_ax_pos(2) - wave_btn_h - 0.01);
+        % Half the previous height, keeping the same bottom edge.
+        wave_btn_h = 0.025;
+        wave_btn_y = max(0.01, main_ax_pos(2) - 0.06);
         set(brx, 'Position', [0.12, wave_btn_y, 0.22, wave_btn_h]);
         set(bzm, 'Position', [0.37, wave_btn_y, 0.22, wave_btn_h]);
 
