@@ -191,9 +191,19 @@ function pyraview(app_options)
              'Units', 'normalized', 'Position', [0.62 0.80 0.38 0.05], ...
              'Tag', 'SpikingBoxCheckbox', 'Callback', callbackstr, 'Value', 0);
 
+        % Quick-select dropdown: All / None / each quality level present.
+        % Populated dynamically as units load (see update_select_menu).
+        uicontrol(sf, 'Style', 'text', 'String', 'Select:', ...
+             'Units', 'normalized', 'Position', [0.62 0.74 0.12 0.05], ...
+             'Tag', 'SpikingSelectText', 'HorizontalAlignment', 'left', ...
+             'FontWeight', 'bold');
+        uicontrol(sf, 'Style', 'popupmenu', 'String', {'Select…', 'All', 'None'}, ...
+             'Units', 'normalized', 'Position', [0.74 0.74 0.24 0.05], ...
+             'Tag', 'SpikingSelectMenu', 'Callback', callbackstr, 'Value', 1);
+
         % Spiking Listbox
         uicontrol(sf, 'Style', 'listbox', 'String', {}, ...
-             'Units', 'normalized', 'Position', [0.6 0 0.4 0.79], ...
+             'Units', 'normalized', 'Position', [0.6 0 0.4 0.73], ...
              'Tag', 'SpikingList', 'Callback', callbackstr);
 
         % Link Y Axes
@@ -301,6 +311,8 @@ function pyraview(app_options)
                 ensure_spike_times_loaded(fig); % load times for newly selected units
                 update_spiking_plot(fig);       % waveform side panel
                 update_spike_overlay(fig);      % spike tick layer in main axes
+            case 'SpikingSelectMenu'
+                apply_unit_selection(fig);
             case 'SpikingSortCheckbox'
                 apply_spiking_sort(fig);
             case 'SpikingBoxCheckbox'
@@ -539,6 +551,9 @@ function update_spiking_list_ui(fig)
     set(lb, 'String', strs);
     set(lb, 'Max', max(2, numel(strs))); % Allow multiple selection
 
+    % Rebuild the quick-select dropdown (All / None / Q<n> present).
+    update_select_menu(fig);
+
     % Default the units to off when there are many of them. Loading and
     % plotting spike times happens lazily on selection, so leaving a large
     % population unselected keeps opening the panel fast.
@@ -580,11 +595,9 @@ function si = sort_spiking_info(si, by_channel)
 
     si = si(order);
 
-    % Renumber the leading index in each label to match the displayed order,
-    % and assign a cycling color so neighbouring units (adjacent channels when
-    % sorted by channel) are easy to tell apart. Doing it here means every load
-    % path (checkbox toggle and check_and_load) gets colors.
-    color_cycle = {'k', 'm', 'b', 'g', [1 0.5 0], 'r'};
+    % Renumber the leading index in each label to match the displayed order.
+    qualities = zeros(1, numel(si));
+    depthKeys = zeros(1, numel(si));
     for k = 1:numel(si)
         q = 0;
         if isfield(si, 'quality') && ~isempty(si(k).quality)
@@ -595,7 +608,23 @@ function si = sort_spiking_info(si, by_channel)
             nm = si(k).name;
         end
         si(k).label = sprintf('%d %s Q%d', k, nm, q);
-        si(k).color = color_cycle{mod(k-1, numel(color_cycle)) + 1};
+
+        qualities(k) = q;
+        if isfield(si, 'best_channel') && ~isempty(si(k).best_channel)
+            depthKeys(k) = si(k).best_channel;
+        else
+            depthKeys(k) = k;
+        end
+    end
+
+    % Assign colors depth-aware so neighbouring units are easy to tell apart,
+    % using a colour-blind-safe palette whose vividness encodes quality (Q2+
+    % vivid, Q1/Q0 muted). Doing it here means every load path (checkbox toggle
+    % and check_and_load) gets colors. Colors are RGB triplets; the tick,
+    % box and waveform drawing code already handles numeric colors.
+    cols = ndi.app.pyraview.unitColors(qualities, depthKeys);
+    for k = 1:numel(si)
+        si(k).color = cols(k, :);
     end
 end
 
@@ -631,6 +660,75 @@ function apply_spiking_sort(fig)
     set(lb, 'String', {si.label});
     set(lb, 'Max', max(2, numel(si)));
     set(lb, 'Value', new_sel);
+
+    % Quality set is unchanged by sorting, but keep the dropdown in sync.
+    update_select_menu(fig);
+
+    ensure_spike_times_loaded(fig);
+    update_spiking_plot(fig);
+    update_spike_overlay(fig);
+end
+
+function update_select_menu(fig)
+    % Populate the quick-select dropdown with All / None plus one entry per
+    % distinct quality level present in the currently loaded units. A neutral
+    % leading 'Select…' entry lets the user re-pick the same option (a
+    % popupmenu only fires its callback when the selection changes, so the
+    % menu is reset to this entry after each action; see apply_unit_selection).
+    menu = findobj(fig, 'Tag', 'SpikingSelectMenu');
+    if isempty(menu)
+        return;
+    end
+
+    si = get_spiking_info(fig);
+    entries = {'Select…', 'All', 'None'};
+    if ~isempty(si)
+        qs = unique([si.quality]);
+        for k = 1:numel(qs)
+            entries{end+1} = sprintf('Q%d', qs(k)); %#ok<AGROW>
+        end
+    end
+    set(menu, 'String', entries, 'Value', 1);
+end
+
+function apply_unit_selection(fig)
+    % Handle the quick-select dropdown: set the listbox selection to All,
+    % None, or every unit of a chosen quality level, then refresh the plots.
+    lb = findobj(fig, 'Tag', 'SpikingList');
+    menu = findobj(fig, 'Tag', 'SpikingSelectMenu');
+    si = get_spiking_info(fig);
+
+    strs = get(menu, 'String');
+    val = get(menu, 'Value');
+    if val < 1 || val > numel(strs)
+        return;
+    end
+    choice = strs{val};
+    n = numel(si);
+
+    switch choice
+        case 'Select…'
+            return; % neutral entry: nothing to do
+        case 'All'
+            set(lb, 'Value', 1:n);
+        case 'None'
+            set(lb, 'Value', []);
+        otherwise
+            % 'Q<n>': select every unit with that quality.
+            q = sscanf(choice, 'Q%d');
+            sel = [];
+            if ~isempty(q)
+                for k = 1:n
+                    if si(k).quality == q
+                        sel(end+1) = k; %#ok<AGROW>
+                    end
+                end
+            end
+            set(lb, 'Value', sel);
+    end
+
+    % Reset to the neutral entry so re-picking the same option fires again.
+    set(menu, 'Value', 1);
 
     ensure_spike_times_loaded(fig);
     update_spiking_plot(fig);
@@ -1001,13 +1099,17 @@ function update_from_scrollbars(fig, ud, source)
     if full_dur <= 0, full_dur = 1; end
 
     if strcmp(source, 'Scroll1')
-        % PAN: slider value is in milliseconds relative to epoch_t0
-        val_ms = round(get(s1, 'Value'));
-        ud.view_t0 = ud.epoch_t0 + val_ms / 1000;
-
-        % Clamp to valid pan range
+        % PAN: slider value is a normalized 0..1 fraction of the pannable
+        % range (see update_pan_slider). Convert it back to a start time.
         max_start = ud.epoch_t1 - ud.view_duration;
         if max_start < ud.epoch_t0, max_start = ud.epoch_t0; end
+        range = max_start - ud.epoch_t0;
+
+        frac = get(s1, 'Value');
+        frac = max(0, min(1, frac));
+        ud.view_t0 = ud.epoch_t0 + frac * range;
+
+        % Clamp to valid pan range
         if ud.view_t0 > max_start, ud.view_t0 = max_start; end
         if ud.view_t0 < ud.epoch_t0, ud.view_t0 = ud.epoch_t0; end
     else
@@ -1079,14 +1181,19 @@ function update_scrollbars(fig, ud)
 end
 
 function update_pan_slider(s1, ud)
-    % Configure the pan scrollbar so that:
-    %   - there is one slider unit per millisecond of pannable range, and
-    %   - clicking either the arrow buttons or the trough between the
-    %     thumb and the arrow moves the view by 10% of the current view
-    %     duration.
+    % Configure the pan scrollbar. The slider works in a normalized 0..1
+    % fraction of the pannable range (0 = view at epoch_t0, 1 = view at the
+    % latest start that still fits the epoch). Both the arrow buttons (minor
+    % step) and a click in the trough between the thumb and the arrow (major
+    % step) move the view by 10% of the current view duration.
     %
-    % The slider value is the start time of the view, measured in
-    % milliseconds since ud.epoch_t0.
+    % Working in a normalized fraction (rather than integer milliseconds)
+    % avoids two problems that made the arrows reverse direction at high zoom:
+    %   - snapping view_t0 to a 1 ms grid (round(...*1000)), which made
+    %     sub-millisecond pans round backwards, and
+    %   - a huge integer slider range (millions of ms) with a tiny SliderStep,
+    %     which the underlying Java slider could not resolve and would step the
+    %     wrong way. The range is now always 0..1.
 
     if isempty(s1) || ~isgraphics(s1)
         return;
@@ -1095,28 +1202,26 @@ function update_pan_slider(s1, ud)
     max_start = ud.epoch_t1 - ud.view_duration;
     if max_start < ud.epoch_t0, max_start = ud.epoch_t0; end
 
-    range_ms = round((max_start - ud.epoch_t0) * 1000);
+    range = max_start - ud.epoch_t0;
 
-    if range_ms < 1
+    if range <= 0
         % Nothing to pan (view covers the whole epoch). Park the slider.
         set(s1, 'Min', 0, 'Max', 1, 'Value', 0, ...
                 'SliderStep', [1 1], 'Enable', 'off');
         return;
     end
 
-    val_ms = round((ud.view_t0 - ud.epoch_t0) * 1000);
-    val_ms = max(0, min(range_ms, val_ms));
+    frac = (ud.view_t0 - ud.epoch_t0) / range;
+    frac = max(0, min(1, frac));
 
-    % Both the arrow buttons (minor step) and a click in the trough
-    % between the thumb and the arrow (major step) move the view by 10%
-    % of the current view duration.
-    step_ms = max(1, round(0.1 * ud.view_duration * 1000));
-    step_frac = min(1, step_ms / range_ms);
+    % Arrow / trough step: 10% of the current view duration expressed as a
+    % fraction of the pannable range, clamped to a valid SliderStep in (0, 1].
+    step = (0.1 * ud.view_duration) / range;
+    if step <= 0, step = eps; end
+    step = min(1, step);
 
-    % Set Min/Max before Value to avoid out-of-range errors when the
-    % previous Max was smaller than the new val_ms.
-    set(s1, 'Min', 0, 'Max', range_ms, 'Value', val_ms, ...
-            'SliderStep', [step_frac, step_frac], 'Enable', 'on');
+    set(s1, 'Min', 0, 'Max', 1, 'Value', frac, ...
+            'SliderStep', [step, step], 'Enable', 'on');
 end
 
 function on_zoom_pan(fig, ~)
@@ -1395,6 +1500,8 @@ function on_resize(fig)
         stt = findobj(sf, 'Tag', 'SpikingTitle');
         ssc = findobj(sf, 'Tag', 'SpikingSortCheckbox');
         sbc = findobj(sf, 'Tag', 'SpikingBoxCheckbox');
+        sst = findobj(sf, 'Tag', 'SpikingSelectText');
+        ssm = findobj(sf, 'Tag', 'SpikingSelectMenu');
         brx = findobj(sf, 'Tag', 'SpikingWaveResetX');
         bzm = findobj(sf, 'Tag', 'SpikingWaveZoom');
 
@@ -1418,8 +1525,12 @@ function on_resize(fig)
         set(ssc, 'Position', [0.65, 0.86, 0.35, 0.05]);
         set(sbc, 'Position', [0.65, 0.80, 0.35, 0.05]);
 
-        % Listbox on Right, below the checkboxes
-        set(slb, 'Position', [0.65, 0, 0.35, 0.79]);
+        % Quick-select label + dropdown under the checkboxes
+        set(sst, 'Position', [0.65, 0.74, 0.12, 0.05]);
+        set(ssm, 'Position', [0.77, 0.74, 0.21, 0.05]);
+
+        % Listbox on Right, below the dropdown
+        set(slb, 'Position', [0.65, 0, 0.35, 0.73]);
     end
 
     update_view(fig);
