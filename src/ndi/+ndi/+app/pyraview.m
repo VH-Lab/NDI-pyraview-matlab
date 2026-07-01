@@ -618,8 +618,8 @@ function si = sort_spiking_info(si, by_channel)
     end
 
     % Assign colors depth-aware so neighbouring units are easy to tell apart,
-    % using a colour-blind-safe palette whose vividness encodes quality (Q2+
-    % vivid, Q1/Q0 muted). Doing it here means every load path (checkbox toggle
+    % using a colour-blind-safe palette whose vividness encodes quality (best
+    % units Q1/Q2 vivid; Q3/Q4 and Q0 muted). Doing it here means every load path (checkbox toggle
     % and check_and_load) gets colors. Colors are RGB triplets; the tick,
     % box and waveform drawing code already handles numeric colors.
     cols = ndi.app.pyraview.unitColors(qualities, depthKeys);

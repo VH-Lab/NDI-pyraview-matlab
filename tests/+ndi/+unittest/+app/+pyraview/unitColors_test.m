@@ -19,21 +19,26 @@ classdef unitColors_test < matlab.unittest.TestCase
         end
 
         function testVividVsMuted(testCase)
-            % Q1 (below the vivid threshold) is muted; Q2+ is vivid. For a
-            % single unit both variants use hue index 1, so the muted Q1 color
-            % must be the pastel version and the Q2 color the vivid version.
-            cQ1 = ndi.app.pyraview.unitColors(1, 1);
-            cQ2 = ndi.app.pyraview.unitColors(2, 1);
-
+            % Q1 is best: Q1 and Q2 are vivid; Q3, Q4 and Q0 are muted. For a
+            % single unit every variant uses hue index 1, so the vivid ones
+            % must be the base color and the muted ones the pastel version.
             vivid = [0.0000 0.4471 0.6980]; % basePalette hue 1
             muted = [0.3733 0.5924 0.7153]; % mutedPalette hue 1
 
-            testCase.verifyEqual(cQ2, vivid, 'AbsTol', 1e-3, 'Q2 should be vivid');
-            testCase.verifyEqual(cQ1, muted, 'AbsTol', 1e-3, 'Q1 should be muted');
+            testCase.verifyEqual(ndi.app.pyraview.unitColors(1, 1), vivid, ...
+                'AbsTol', 1e-3, 'Q1 (best) should be vivid');
+            testCase.verifyEqual(ndi.app.pyraview.unitColors(2, 1), vivid, ...
+                'AbsTol', 1e-3, 'Q2 should be vivid');
+            testCase.verifyEqual(ndi.app.pyraview.unitColors(3, 1), muted, ...
+                'AbsTol', 1e-3, 'Q3 should be muted');
+            testCase.verifyEqual(ndi.app.pyraview.unitColors(4, 1), muted, ...
+                'AbsTol', 1e-3, 'Q4 should be muted');
+            testCase.verifyEqual(ndi.app.pyraview.unitColors(0, 1), muted, ...
+                'AbsTol', 1e-3, 'Q0 (no metadata) should be muted');
 
             % A muted color is closer to white (larger min component) than its
             % vivid counterpart.
-            testCase.verifyGreaterThan(min(cQ1), min(cQ2), ...
+            testCase.verifyGreaterThan(min(muted), min(vivid), ...
                 'Muted color should be lighter/less saturated than vivid');
         end
 

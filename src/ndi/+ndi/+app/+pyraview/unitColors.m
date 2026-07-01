@@ -18,30 +18,34 @@ function colors = unitColors(qualities, depthKeys, options)
 %        (in CIELAB) from its recent depth neighbours, so adjacent units are
 %        easy to tell apart.
 %
-%     2. Convey quality. Higher-quality units (QUALITY >= vividThreshold, by
-%        default 2, i.e. Q2 and above) are drawn with the full vivid palette;
-%        lower-quality units (Q1 and Q0) are drawn with a muted/pastel version
-%        of the same hue so they read as "less prominent". Vividness is a
-%        saturation/lightness difference, which is orthogonal to red/green
-%        confusion and therefore remains legible to colour-blind viewers.
+%     2. Convey quality. The best units -- quality in [vividMin, vividMax],
+%        by default Q1 and Q2 (Q1 is best) -- are drawn with the full vivid
+%        palette; every other unit (lower-quality Q3/Q4, and Q0 which has no
+%        quality metadata) is drawn with a muted/pastel version of the same
+%        hue so it reads as "less prominent". Vividness is a saturation/
+%        lightness difference, which is orthogonal to red/green confusion and
+%        therefore remains legible to colour-blind viewers.
 %
 %   Inputs:
-%       QUALITIES  - 1-by-N vector of unit quality numbers (e.g. 1..4).
+%       QUALITIES  - 1-by-N vector of unit quality numbers (e.g. 1..4, where
+%                    Q1 is best). Q0 denotes a unit with no quality metadata.
 %       DEPTHKEYS  - 1-by-N vector of a depth-ordering key per unit (the
 %                    unit's best/maximum-energy channel index is used by the
 %                    caller). If its length does not match QUALITIES, unit
 %                    order (1..N) is used instead.
 %
 %   Optional name/value arguments:
-%       vividThreshold - Quality at/above which the vivid palette is used.
-%                        Default 2 (Q2 and higher are vivid; Q1/Q0 muted).
+%       vividMin       - Lowest quality number drawn vivid. Default 1.
+%       vividMax       - Highest quality number drawn vivid. Default 2.
+%                        So Q1 and Q2 are vivid; Q3, Q4 and Q0 are muted.
 %       neighborWindow - Number of preceding depth-neighbours considered when
 %                        picking a maximally-different hue. Default 4.
 %
     arguments
         qualities (1,:) double
         depthKeys (1,:) double
-        options.vividThreshold (1,1) double = 2
+        options.vividMin (1,1) double = 1
+        options.vividMax (1,1) double = 2
         options.neighborWindow (1,1) double = 4
     end
 
@@ -106,10 +110,10 @@ function colors = unitColors(qualities, depthKeys, options)
 
     for u = 1:N
         h = hueIdx(u);
-        if qualities(u) >= options.vividThreshold
-            colors(u, :) = B(h, :);
+        if qualities(u) >= options.vividMin && qualities(u) <= options.vividMax
+            colors(u, :) = B(h, :); % best units (Q1, Q2): vivid
         else
-            colors(u, :) = M(h, :);
+            colors(u, :) = M(h, :); % Q3, Q4, Q0: muted
         end
     end
 end
