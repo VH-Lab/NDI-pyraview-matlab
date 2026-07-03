@@ -1,10 +1,14 @@
-function colors = unitColors(qualities, depthKeys, options)
+function [colors, isVivid] = unitColors(qualities, depthKeys, options)
 % UNITCOLORS - Assign per-unit display colors for pyraview spiking units.
 %
-%   COLORS = ndi.app.pyraview.unitColors(QUALITIES, DEPTHKEYS)
+%   [COLORS, ISVIVID] = ndi.app.pyraview.unitColors(QUALITIES, DEPTHKEYS)
 %
 %   Returns an N-by-3 matrix of RGB colors (values 0..1), one row per unit,
-%   used to draw that unit's hash marks, extent boxes and waveform.
+%   used to draw that unit's hash marks, extent boxes and waveform. ISVIVID is
+%   an N-by-1 logical, true for the units drawn with the vivid palette (the
+%   best-quality units); callers use it to draw good units thicker/solid and
+%   poorer units thinner/dashed, a geometry cue that stays readable when
+%   zoomed in and thin marks make the colour saturation hard to judge.
 %
 %   The colors do two jobs at once:
 %
@@ -51,6 +55,7 @@ function colors = unitColors(qualities, depthKeys, options)
 
     N = numel(qualities);
     colors = zeros(N, 3);
+    isVivid = false(N, 1);
     if N == 0
         return;
     end
@@ -110,7 +115,9 @@ function colors = unitColors(qualities, depthKeys, options)
 
     for u = 1:N
         h = hueIdx(u);
-        if qualities(u) >= options.vividMin && qualities(u) <= options.vividMax
+        good = qualities(u) >= options.vividMin && qualities(u) <= options.vividMax;
+        isVivid(u) = good;
+        if good
             colors(u, :) = B(h, :); % best units (Q1, Q2): vivid
         else
             colors(u, :) = M(h, :); % Q3, Q4, Q0: muted

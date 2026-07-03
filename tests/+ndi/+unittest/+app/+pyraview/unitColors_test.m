@@ -42,6 +42,18 @@ classdef unitColors_test < matlab.unittest.TestCase
                 'Muted color should be lighter/less saturated than vivid');
         end
 
+        function testIsVividOutput(testCase)
+            % Second output flags the vivid (best-quality) units: Q1/Q2 true,
+            % Q0/Q3/Q4 false, aligned with the returned colors.
+            qualities = [1 2 3 4 0];
+            [~, isVivid] = ndi.app.pyraview.unitColors(qualities, 1:5);
+
+            testCase.verifySize(isVivid, [5, 1]);
+            testCase.verifyEqual(isVivid(:)', logical([1 1 0 0 0]), ...
+                'Q1/Q2 vivid; Q3/Q4/Q0 muted');
+            testCase.verifyClass(isVivid, 'logical');
+        end
+
         function testNeighborsDiffer(testCase)
             % Units adjacent in depth should get different hues (depth-aware
             % assignment), so their colors must not be identical.

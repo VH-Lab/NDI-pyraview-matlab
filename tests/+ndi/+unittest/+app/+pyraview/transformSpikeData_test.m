@@ -82,7 +82,7 @@ classdef transformSpikeData_test < matlab.unittest.TestCase
 
         function testShowBox(testCase)
             % With show_box true, a 2 ms wide box spanning low_channel..high_channel
-            % is emitted in addition to the vertical tick.
+            % is emitted in the separate box outputs, in addition to the tick.
             spiking_info = struct();
             spiking_info(1).spike_times = 20;
             spiking_info(1).best_channel = 3;
@@ -90,20 +90,25 @@ classdef transformSpikeData_test < matlab.unittest.TestCase
             spiking_info(1).high_channel = 5;
 
             spacing = 100;
-            [X, Y] = ndi.app.pyraview.transformSpikeData(spiking_info, 1, 0, 100, spacing, true);
+            [tickX, ~, boxX, boxY] = ndi.app.pyraview.transformSpikeData(spiking_info, 1, 0, 100, spacing, true);
+
+            % The tick is in the tick outputs, at t = 20.
+            testCase.verifyTrue(any(tickX == 20), 'Tick present at t=20 in tick outputs');
 
             % Box corners should be at t +/- 0.001 s (2 ms total width).
-            testCase.verifyTrue(any(abs(X - (20 - 0.001)) < 1e-9), 'Box left edge at t-1ms');
-            testCase.verifyTrue(any(abs(X - (20 + 0.001)) < 1e-9), 'Box right edge at t+1ms');
+            testCase.verifyTrue(any(abs(boxX - (20 - 0.001)) < 1e-9), 'Box left edge at t-1ms');
+            testCase.verifyTrue(any(abs(boxX - (20 + 0.001)) < 1e-9), 'Box right edge at t+1ms');
 
             % Box vertical extent: (low-1)*spacing = 100 to (high-1)*spacing = 400.
-            yvals = Y(~isnan(Y));
+            yvals = boxY(~isnan(boxY));
             testCase.verifyEqual(min(yvals), 100, 'Box bottom at (low_channel-1)*spacing');
             testCase.verifyEqual(max(yvals), 400, 'Box top at (high_channel-1)*spacing');
 
-            % Without show_box, no box edges appear (only the tick at t=20).
-            [X2, ~] = ndi.app.pyraview.transformSpikeData(spiking_info, 1, 0, 100, spacing);
-            testCase.verifyFalse(any(abs(X2 - (20 - 0.001)) < 1e-9), 'No box when show_box is false');
+            % Without show_box, the box outputs are empty (only the tick remains).
+            [tickX2, ~, boxX2, boxY2] = ndi.app.pyraview.transformSpikeData(spiking_info, 1, 0, 100, spacing);
+            testCase.verifyTrue(any(tickX2 == 20), 'Tick still present when show_box is false');
+            testCase.verifyEmpty(boxX2, 'No box X when show_box is false');
+            testCase.verifyEmpty(boxY2, 'No box Y when show_box is false');
         end
     end
 end
