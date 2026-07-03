@@ -1,7 +1,7 @@
-function [X, Y] = transformSpikeData(spiking_info, selectedIdx, t0, t1, spacing, show_box)
+function [tickX, tickY, boxX, boxY] = transformSpikeData(spiking_info, selectedIdx, t0, t1, spacing, show_box)
 % TRANSFORM_SPIKE_DATA - Prepare spike data for plotting
 %
-%   [X, Y] = ndi.app.pyraview.transformSpikeData(SPIKING_INFO, SELECTEDIDX, T0, T1, SPACING, SHOW_BOX)
+%   [TICKX, TICKY, BOXX, BOXY] = ndi.app.pyraview.transformSpikeData(SPIKING_INFO, SELECTEDIDX, T0, T1, SPACING, SHOW_BOX)
 %
 %   Inputs:
 %       SPIKING_INFO - Struct array from load_spiking_neurons
@@ -11,11 +11,17 @@ function [X, Y] = transformSpikeData(spiking_info, selectedIdx, t0, t1, spacing,
 %       SPACING      - Vertical spacing between channels
 %       SHOW_BOX     - (Optional, default false) If true, also emit a 2 ms wide
 %                      box outline per spike spanning from the unit's
-%                      'low_channel' to its 'high_channel' (same line, so it
-%                      can be drawn in one plot call per color).
+%                      'low_channel' to its 'high_channel'.
 %
 %   Outputs:
-%       X, Y         - Vectors for plotting (NaN-separated segments)
+%       TICKX, TICKY - Vectors for plotting the vertical spike ticks
+%                      (NaN-separated segments).
+%       BOXX, BOXY   - Vectors for plotting the extent boxes (NaN-separated
+%                      rectangle outlines); empty unless SHOW_BOX is true.
+%
+%   Ticks and boxes are returned separately so the caller can draw them with
+%   different line styles/widths (e.g. dashed, thinner boxes for lower-quality
+%   units) in one plot call each.
 %
 
     arguments
@@ -27,8 +33,10 @@ function [X, Y] = transformSpikeData(spiking_info, selectedIdx, t0, t1, spacing,
         show_box (1,1) logical = false
     end
 
-    X = [];
-    Y = [];
+    tickX = [];
+    tickY = [];
+    boxX = [];
+    boxY = [];
 
     if isempty(spiking_info) || isempty(selectedIdx)
         return;
@@ -36,8 +44,10 @@ function [X, Y] = transformSpikeData(spiking_info, selectedIdx, t0, t1, spacing,
 
     box_half_width = 0.001; % seconds; box is 2 ms wide, centered on the spike
 
-    x_cells = {};
-    y_cells = {};
+    tick_x_cells = {};
+    tick_y_cells = {};
+    box_x_cells = {};
+    box_y_cells = {};
 
     for k = 1:numel(selectedIdx)
         idx = selectedIdx(k);
@@ -77,8 +87,8 @@ function [X, Y] = transformSpikeData(spiking_info, selectedIdx, t0, t1, spacing,
         tempX = [tr; tr; nan(1, numSpikes)];
         tempY = [repmat(y1, 1, numSpikes); repmat(y2, 1, numSpikes); nan(1, numSpikes)];
 
-        x_cells{end+1} = tempX(:); %#ok<AGROW>
-        y_cells{end+1} = tempY(:); %#ok<AGROW>
+        tick_x_cells{end+1} = tempX(:); %#ok<AGROW>
+        tick_y_cells{end+1} = tempY(:); %#ok<AGROW>
 
         % Optional box spanning the significant-channel extent of the unit.
         if show_box
@@ -101,18 +111,22 @@ function [X, Y] = transformSpikeData(spiking_info, selectedIdx, t0, t1, spacing,
 
             % Rectangle outline per spike, NaN-separated:
             % (xL,yLow)->(xR,yLow)->(xR,yHigh)->(xL,yHigh)->(xL,yLow)->NaN
-            boxX = [xL; xR; xR; xL; xL; nan(1, numSpikes)];
-            boxY = [repmat(yLow, 1, numSpikes); repmat(yLow, 1, numSpikes); ...
+            boxXblock = [xL; xR; xR; xL; xL; nan(1, numSpikes)];
+            boxYblock = [repmat(yLow, 1, numSpikes); repmat(yLow, 1, numSpikes); ...
                     repmat(yHigh, 1, numSpikes); repmat(yHigh, 1, numSpikes); ...
                     repmat(yLow, 1, numSpikes); nan(1, numSpikes)];
 
-            x_cells{end+1} = boxX(:); %#ok<AGROW>
-            y_cells{end+1} = boxY(:); %#ok<AGROW>
+            box_x_cells{end+1} = boxXblock(:); %#ok<AGROW>
+            box_y_cells{end+1} = boxYblock(:); %#ok<AGROW>
         end
     end
 
-    if ~isempty(x_cells)
-        X = cell2mat(x_cells');
-        Y = cell2mat(y_cells');
+    if ~isempty(tick_x_cells)
+        tickX = cell2mat(tick_x_cells');
+        tickY = cell2mat(tick_y_cells');
+    end
+    if ~isempty(box_x_cells)
+        boxX = cell2mat(box_x_cells');
+        boxY = cell2mat(box_y_cells');
     end
 end

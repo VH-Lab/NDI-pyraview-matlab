@@ -191,9 +191,24 @@ function pyraview(app_options)
              'Units', 'normalized', 'Position', [0.62 0.80 0.38 0.05], ...
              'Tag', 'SpikingBoxCheckbox', 'Callback', callbackstr, 'Value', 0);
 
+        % Quick-select dropdown: All / None / each quality level present.
+        % Populated dynamically as units load (see update_select_menu).
+        uicontrol(sf, 'Style', 'text', 'String', 'Select:', ...
+             'Units', 'normalized', 'Position', [0.62 0.74 0.12 0.05], ...
+             'Tag', 'SpikingSelectText', 'HorizontalAlignment', 'left', ...
+             'FontWeight', 'bold');
+        uicontrol(sf, 'Style', 'popupmenu', 'String', {'Select…', 'All', 'None'}, ...
+             'Units', 'normalized', 'Position', [0.74 0.74 0.24 0.05], ...
+             'Tag', 'SpikingSelectMenu', 'Callback', callbackstr, 'Value', 1);
+
+        % Clear labels button: remove all click-to-identify labels/highlights.
+        uicontrol(sf, 'Style', 'pushbutton', 'String', 'Clear labels', ...
+             'Units', 'normalized', 'Position', [0.65 0.68 0.33 0.05], ...
+             'Tag', 'SpikingClearLabels', 'Callback', callbackstr);
+
         % Spiking Listbox
         uicontrol(sf, 'Style', 'listbox', 'String', {}, ...
-             'Units', 'normalized', 'Position', [0.6 0 0.4 0.79], ...
+             'Units', 'normalized', 'Position', [0.6 0 0.4 0.73], ...
              'Tag', 'SpikingList', 'Callback', callbackstr);
 
         % Link Y Axes
@@ -204,6 +219,14 @@ function pyraview(app_options)
         z.ActionPostCallback = @(src, event) on_zoom_pan(fig, event);
         p = pan(fig);
         p.ActionPostCallback = @(src, event) on_zoom_pan(fig, event);
+
+        % Let clicks on spike marks / labels run their own ButtonDownFcn even
+        % while pan or zoom mode is active: the filter returns true for those
+        % objects, so a click on a hash mark or box identifies the unit, while
+        % a click/drag anywhere else pans or zooms as usual. This is what lets
+        % click-to-identify work without a separate interaction mode.
+        z.ButtonDownFilter = @spike_click_filter;
+        p.ButtonDownFilter = @spike_click_filter;
 
 
         % Scrollbar 1 (Top) - Pan
@@ -301,6 +324,10 @@ function pyraview(app_options)
                 ensure_spike_times_loaded(fig); % load times for newly selected units
                 update_spiking_plot(fig);       % waveform side panel
                 update_spike_overlay(fig);      % spike tick layer in main axes
+            case 'SpikingSelectMenu'
+                apply_unit_selection(fig);
+            case 'SpikingClearLabels'
+                clear_all_labels(fig);
             case 'SpikingSortCheckbox'
                 apply_spiking_sort(fig);
             case 'SpikingBoxCheckbox'
@@ -539,6 +566,9 @@ function update_spiking_list_ui(fig)
     set(lb, 'String', strs);
     set(lb, 'Max', max(2, numel(strs))); % Allow multiple selection
 
+    % Rebuild the quick-select dropdown (All / None / Q<n> present).
+    update_select_menu(fig);
+
     % Default the units to off when there are many of them. Loading and
     % plotting spike times happens lazily on selection, so leaving a large
     % population unselected keeps opening the panel fast.
@@ -580,11 +610,9 @@ function si = sort_spiking_info(si, by_channel)
 
     si = si(order);
 
-    % Renumber the leading index in each label to match the displayed order,
-    % and assign a cycling color so neighbouring units (adjacent channels when
-    % sorted by channel) are easy to tell apart. Doing it here means every load
-    % path (checkbox toggle and check_and_load) gets colors.
-    color_cycle = {'k', 'm', 'b', 'g', [1 0.5 0], 'r'};
+    % Renumber the leading index in each label to match the displayed order.
+    qualities = zeros(1, numel(si));
+    depthKeys = zeros(1, numel(si));
     for k = 1:numel(si)
         q = 0;
         if isfield(si, 'quality') && ~isempty(si(k).quality)
@@ -595,7 +623,24 @@ function si = sort_spiking_info(si, by_channel)
             nm = si(k).name;
         end
         si(k).label = sprintf('%d %s Q%d', k, nm, q);
-        si(k).color = color_cycle{mod(k-1, numel(color_cycle)) + 1};
+
+        qualities(k) = q;
+        if isfield(si, 'best_channel') && ~isempty(si(k).best_channel)
+            depthKeys(k) = si(k).best_channel;
+        else
+            depthKeys(k) = k;
+        end
+    end
+
+    % Assign colors depth-aware so neighbouring units are easy to tell apart,
+    % using a colour-blind-safe palette whose vividness encodes quality (best
+    % units Q1/Q2 vivid; Q3/Q4 and Q0 muted). Doing it here means every load path (checkbox toggle
+    % and check_and_load) gets colors. Colors are RGB triplets; the tick,
+    % box and waveform drawing code already handles numeric colors.
+    [cols, vivids] = ndi.app.pyraview.unitColors(qualities, depthKeys);
+    for k = 1:numel(si)
+        si(k).color = cols(k, :);
+        si(k).vivid = vivids(k); % true for best-quality (vivid) units
     end
 end
 
@@ -631,6 +676,75 @@ function apply_spiking_sort(fig)
     set(lb, 'String', {si.label});
     set(lb, 'Max', max(2, numel(si)));
     set(lb, 'Value', new_sel);
+
+    % Quality set is unchanged by sorting, but keep the dropdown in sync.
+    update_select_menu(fig);
+
+    ensure_spike_times_loaded(fig);
+    update_spiking_plot(fig);
+    update_spike_overlay(fig);
+end
+
+function update_select_menu(fig)
+    % Populate the quick-select dropdown with All / None plus one entry per
+    % distinct quality level present in the currently loaded units. A neutral
+    % leading 'Select…' entry lets the user re-pick the same option (a
+    % popupmenu only fires its callback when the selection changes, so the
+    % menu is reset to this entry after each action; see apply_unit_selection).
+    menu = findobj(fig, 'Tag', 'SpikingSelectMenu');
+    if isempty(menu)
+        return;
+    end
+
+    si = get_spiking_info(fig);
+    entries = {'Select…', 'All', 'None'};
+    if ~isempty(si)
+        qs = unique([si.quality]);
+        for k = 1:numel(qs)
+            entries{end+1} = sprintf('Q%d', qs(k)); %#ok<AGROW>
+        end
+    end
+    set(menu, 'String', entries, 'Value', 1);
+end
+
+function apply_unit_selection(fig)
+    % Handle the quick-select dropdown: set the listbox selection to All,
+    % None, or every unit of a chosen quality level, then refresh the plots.
+    lb = findobj(fig, 'Tag', 'SpikingList');
+    menu = findobj(fig, 'Tag', 'SpikingSelectMenu');
+    si = get_spiking_info(fig);
+
+    strs = get(menu, 'String');
+    val = get(menu, 'Value');
+    if val < 1 || val > numel(strs)
+        return;
+    end
+    choice = strs{val};
+    n = numel(si);
+
+    switch choice
+        case 'Select…'
+            return; % neutral entry: nothing to do
+        case 'All'
+            set(lb, 'Value', 1:n);
+        case 'None'
+            set(lb, 'Value', []);
+        otherwise
+            % 'Q<n>': select every unit with that quality.
+            q = sscanf(choice, 'Q%d');
+            sel = [];
+            if ~isempty(q)
+                for k = 1:n
+                    if si(k).quality == q
+                        sel(end+1) = k; %#ok<AGROW>
+                    end
+                end
+            end
+            set(lb, 'Value', sel);
+    end
+
+    % Reset to the neutral entry so re-picking the same option fires again.
+    set(menu, 'Value', 1);
 
     ensure_spike_times_loaded(fig);
     update_spiking_plot(fig);
@@ -734,6 +848,7 @@ function update_spiking_plot(fig)
     % a whole color group is a single line object.
     color_keys = {};  % unique color key strings
     color_vals = {};  % actual color value per key
+    vivid_by_color = {}; % quality class per key (true = vivid/thicker)
     X_by_color = {};  % accumulated X column per key
     Y_by_color = {};  % accumulated Y column per key
     text_labels = struct('x', {}, 'y_top', {}, 'y_bot', {}, 'str', {});
@@ -776,6 +891,9 @@ function update_spiking_plot(fig)
             color_vals{end+1} = color; %#ok<AGROW>
             X_by_color{end+1} = []; %#ok<AGROW>
             Y_by_color{end+1} = []; %#ok<AGROW>
+            % Line width mirrors the main-axes quality cue: best-quality
+            % (vivid) units thicker, lower-quality (muted) units thinner.
+            vivid_by_color{end+1} = ~(isfield(info, 'vivid') && ~isempty(info.vivid) && ~info.vivid); %#ok<AGROW>
             ci = numel(color_keys);
         end
 
@@ -798,7 +916,12 @@ function update_spiking_plot(fig)
     hold(sax, 'on');
     for ci = 1:numel(color_keys)
         if ~isempty(X_by_color{ci})
-            plot(sax, X_by_color{ci}, Y_by_color{ci}, 'Color', color_vals{ci});
+            if vivid_by_color{ci}
+                lw = 1.5;
+            else
+                lw = 0.75;
+            end
+            plot(sax, X_by_color{ci}, Y_by_color{ci}, 'Color', color_vals{ci}, 'LineWidth', lw);
         end
     end
 
@@ -819,7 +942,7 @@ function si = get_spiking_info(fig)
         si = struct('element_obj', {}, 'element_doc', {}, 'neuron_doc', {}, ...
                     'label', {}, 'name', {}, 'quality', {}, ...
                     'spike_times', {}, 'times_loaded', {}, 'best_channel', {}, ...
-                    'low_channel', {}, 'high_channel', {}, 'color', {});
+                    'low_channel', {}, 'high_channel', {}, 'color', {}, 'vivid', {});
     end
 end
 
@@ -828,8 +951,9 @@ function set_spiking_info(fig, si)
 end
 
 function bring_ticks_to_front(ax)
-    % Move the spike tick line objects to the front of the axes' child stack
-    % (drawn on top of the data traces). Axes child index 1 is topmost.
+    % Move the spike tick, highlight and label objects to the front of the
+    % axes' child stack (drawn on top of the data traces). Axes child index 1
+    % is topmost; keep labels above highlights above ticks.
     ch = get(ax, 'Children');
     if numel(ch) < 2
         return;
@@ -838,9 +962,12 @@ function bring_ticks_to_front(ax)
     if ~iscell(tags)
         tags = {tags};
     end
+    isTip = strcmp(tags, 'SpikeTip');
+    isHi = strcmp(tags, 'SpikeHighlight');
     isTick = strcmp(tags, 'SpikeTick');
-    if any(isTick) && ~all(isTick)
-        set(ax, 'Children', [ch(isTick); ch(~isTick)]);
+    isFront = isTip | isHi | isTick;
+    if any(isFront) && ~all(isFront)
+        set(ax, 'Children', [ch(isTip); ch(isHi); ch(isTick); ch(~isFront)]);
     end
 end
 
@@ -854,8 +981,10 @@ function update_spike_overlay(fig)
     ud = get(fig, 'UserData');
     ax = ud.axes;
 
-    % Remove any previous tick layer.
+    % Remove any previous tick layer. Identify labels/highlights refer to the
+    % old geometry, so clear them too when the overlay is rebuilt.
     delete(findobj(ax, 'Tag', 'SpikeTick'));
+    clear_all_labels(fig);
 
     si = get_spiking_info(fig);
     lb = findobj(fig, 'Tag', 'SpikingList');
@@ -909,16 +1038,275 @@ function update_spike_overlay(fig)
         else
             col = key;
         end
+
+        % Quality cue that survives zooming in (when thin marks make the
+        % colour saturation hard to read): best-quality (vivid) units get
+        % thick solid ticks and solid boxes; lower-quality (muted) units get
+        % thin ticks and dashed boxes. A colour group is uniform in quality
+        % class, so the first unit's 'vivid' flag sets the style for the group.
+        isGood = true;
+        if isfield(si, 'vivid') && ~isempty(si(idxs(1)).vivid)
+            isGood = si(idxs(1)).vivid;
+        end
+        if isGood
+            lw_tick = 2.5; lw_box = 2.0; box_style = '-';
+        else
+            lw_tick = 1.2; lw_box = 1.2; box_style = '--';
+        end
+
         % Unbounded window -> ticks (and optional boxes) for the entire
-        % recording, drawn once per color in a single plot call.
-        [sX, sY] = ndi.app.pyraview.transformSpikeData(si, idxs, -Inf, Inf, spacing, show_box);
-        if ~isempty(sX)
-            plot(ax, sX, sY, 'Color', col, 'LineWidth', 2, 'Tag', 'SpikeTick');
+        % recording, drawn once per color. Ticks and boxes are separate line
+        % objects so the box can be dashed independently. Both carry the
+        % click-to-identify callback (see on_spike_click / spike_click_filter).
+        [tX, tY, bX, bY] = ndi.app.pyraview.transformSpikeData(si, idxs, -Inf, Inf, spacing, show_box);
+        if ~isempty(tX)
+            plot(ax, tX, tY, 'Color', col, 'LineWidth', lw_tick, 'Tag', 'SpikeTick', ...
+                'ButtonDownFcn', @(s, e) on_spike_click(s));
+        end
+        if ~isempty(bX)
+            plot(ax, bX, bY, 'Color', col, 'LineWidth', lw_box, 'LineStyle', box_style, ...
+                'Tag', 'SpikeTick', 'ButtonDownFcn', @(s, e) on_spike_click(s));
         end
     end
 
     set(ax, 'XLim', xl, 'YLim', yl);
     bring_ticks_to_front(ax);
+end
+
+function flag = spike_click_filter(obj, ~)
+    % ButtonDownFilter for the pan/zoom modes. Returning true tells the mode to
+    % stand aside and let the clicked object's ButtonDownFcn run. We do that for
+    % spike marks (to identify the unit) and for labels (to dismiss them);
+    % everything else (empty axes space) returns false so pan/zoom acts normally.
+    flag = false;
+    try
+        t = get(obj, 'Tag');
+        if ischar(t) && (strcmp(t, 'SpikeTick') || strcmp(t, 'SpikeTip'))
+            flag = true;
+        end
+    catch
+        flag = false;
+    end
+end
+
+function on_spike_click(src)
+    % A spike mark was clicked. Find the nearest unit to the click point and
+    % add a persistent label + highlight for it.
+    fig = ancestor(src, 'figure');
+    ud = get(fig, 'UserData');
+    ax = ud.axes;
+
+    cp = get(ax, 'CurrentPoint');
+    xc = cp(1, 1);
+    yc = cp(1, 2);
+
+    idx = nearest_unit(fig, xc, yc);
+    if isempty(idx)
+        return;
+    end
+    add_label(fig, idx, xc, yc);
+end
+
+function idx = nearest_unit(fig, xc, yc)
+    % Return the index (into spiking_info) of the selected unit whose nearest
+    % on-screen spike mark is closest to the click point (xc, yc), measured in
+    % pixels so the different x/y data scales do not distort "nearest". Only
+    % spikes within the current x-limits and near the click in time are
+    % examined, so the cost is tiny regardless of the total spike count.
+    idx = [];
+    ud = get(fig, 'UserData');
+    ax = ud.axes;
+    spacing = ud.channel_y_spacing;
+
+    si = get_spiking_info(fig);
+    lb = findobj(fig, 'Tag', 'SpikingList');
+    if isempty(si) || isempty(lb)
+        return;
+    end
+    sel = get(lb, 'Value');
+    if isempty(sel)
+        return;
+    end
+
+    bc = findobj(fig, 'Tag', 'SpikingBoxCheckbox');
+    show_box = ~isempty(bc) && get(bc, 'Value') == 1;
+
+    xl = get(ax, 'XLim');
+    yl = get(ax, 'YLim');
+    pp = getpixelposition(ax);
+    if diff(xl) <= 0 || diff(yl) <= 0 || pp(3) <= 0 || pp(4) <= 0
+        return;
+    end
+    sx = pp(3) / diff(xl); % pixels per x-unit (seconds)
+    sy = pp(4) / diff(yl); % pixels per y-unit
+
+    tolPx = 15;
+    box_half_width = 0.001;
+    timeTol = tolPx / sx + box_half_width;
+
+    bestD = tolPx;
+    for k = 1:numel(sel)
+        u = sel(k);
+        if u > numel(si), continue; end
+        info = si(u);
+        times = info.spike_times;
+        if isempty(times), continue; end
+
+        % Restrict to spikes near the click in time.
+        t_near = times(abs(times - xc) <= timeTol & times >= xl(1) - timeTol & times <= xl(2) + timeTol);
+        if isempty(t_near), continue; end
+        t_near = t_near(:)';
+
+        ch = info.best_channel;
+        y_center = (ch - 1) * spacing + 0.5 * spacing;
+
+        % Distance to the vertical tick of each nearby spike.
+        for tt = t_near
+            d = hypot((tt - xc) * sx, (y_center - yc) * sy);
+            if d < bestD
+                bestD = d;
+                idx = u;
+            end
+        end
+
+        % Distance to the box outline, if boxes are shown.
+        if show_box
+            lo = info.low_channel;
+            hi = info.high_channel;
+            yLow = (lo - 1) * spacing;
+            yHigh = (hi - 1) * spacing;
+            for tt = t_near
+                d = rect_edge_dist_px(xc, yc, tt - box_half_width, tt + box_half_width, yLow, yHigh, sx, sy);
+                if d < bestD
+                    bestD = d;
+                    idx = u;
+                end
+            end
+        end
+    end
+end
+
+function d = rect_edge_dist_px(px, py, x1, x2, y1, y2, sx, sy)
+    % Minimum pixel distance from point (px,py) to the outline of the rectangle
+    % with x in [x1,x2], y in [y1,y2].
+    d = min([ ...
+        seg_dist_px(px, py, x1, y1, x2, y1, sx, sy), ...
+        seg_dist_px(px, py, x2, y1, x2, y2, sx, sy), ...
+        seg_dist_px(px, py, x2, y2, x1, y2, sx, sy), ...
+        seg_dist_px(px, py, x1, y2, x1, y1, sx, sy)]);
+end
+
+function d = seg_dist_px(px, py, ax_, ay, bx, by, sx, sy)
+    % Pixel distance from point to the segment (ax_,ay)-(bx,by). Coordinates are
+    % scaled to pixels first so the metric matches what the user sees.
+    pxs = px * sx; pys = py * sy;
+    axs = ax_ * sx; ays = ay * sy;
+    bxs = bx * sx; bys = by * sy;
+    vx = bxs - axs; vy = bys - ays;
+    wx = pxs - axs; wy = pys - ays;
+    L2 = vx * vx + vy * vy;
+    if L2 <= 0
+        t = 0;
+    else
+        t = max(0, min(1, (wx * vx + wy * vy) / L2));
+    end
+    cx = axs + t * vx;
+    cy = ays + t * vy;
+    d = hypot(pxs - cx, pys - cy);
+end
+
+function add_label(fig, idx, xc, yc)
+    % Add a persistent, dismissable label for unit IDX at (xc,yc), plus a
+    % highlight of that unit's marks. Duplicate labels for the same unit are
+    % skipped. The label carries its highlight handles and the unit id in its
+    % UserData so clicking it removes just that label + highlight.
+    ud = get(fig, 'UserData');
+    ax = ud.axes;
+    si = get_spiking_info(fig);
+    if idx > numel(si)
+        return;
+    end
+
+    unit_id = '';
+    try
+        unit_id = si(idx).element_doc.id();
+    catch
+        unit_id = si(idx).label;
+    end
+
+    % Skip if this unit already has a label.
+    existing = findobj(ax, 'Tag', 'SpikeTip');
+    for h = existing(:)'
+        u = get(h, 'UserData');
+        if isstruct(u) && isfield(u, 'unitId') && strcmp(u.unitId, unit_id)
+            return;
+        end
+    end
+
+    hl = draw_highlight(fig, idx);
+
+    label = si(idx).label;
+    th = text(ax, xc, yc, [' ' label '   [x]'], 'Tag', 'SpikeTip', ...
+        'BackgroundColor', [1 1 0.85], 'EdgeColor', [0.2 0.2 0.2], 'Margin', 3, ...
+        'FontSize', 9, 'Interpreter', 'none', 'Clipping', 'on', ...
+        'VerticalAlignment', 'bottom', 'HorizontalAlignment', 'left', ...
+        'ButtonDownFcn', @(s, e) delete_one_label(s));
+    set(th, 'UserData', struct('hl', hl, 'unitId', unit_id));
+end
+
+function hl = draw_highlight(fig, idx)
+    % Draw unit IDX's ticks (and boxes, if shown) as a bold black overlay for
+    % the whole recording, so panning/zooming keeps the unit highlighted.
+    % Returns the created line handles. The overlay is not itself pickable, so
+    % clicks fall through to the underlying marks.
+    ud = get(fig, 'UserData');
+    ax = ud.axes;
+    spacing = ud.channel_y_spacing;
+    si = get_spiking_info(fig);
+
+    bc = findobj(fig, 'Tag', 'SpikingBoxCheckbox');
+    show_box = ~isempty(bc) && get(bc, 'Value') == 1;
+
+    [tX, tY, bX, bY] = ndi.app.pyraview.transformSpikeData(si, idx, -Inf, Inf, spacing, show_box);
+
+    xl = get(ax, 'XLim');
+    yl = get(ax, 'YLim');
+    hold(ax, 'on');
+    hl = gobjects(0);
+    if ~isempty(tX)
+        h = plot(ax, tX, tY, 'Color', 'k', 'LineWidth', 4, 'Tag', 'SpikeHighlight', ...
+            'PickableParts', 'none', 'HitTest', 'off');
+        hl(end+1) = h;
+    end
+    if ~isempty(bX)
+        h = plot(ax, bX, bY, 'Color', 'k', 'LineWidth', 3, 'Tag', 'SpikeHighlight', ...
+            'PickableParts', 'none', 'HitTest', 'off');
+        hl(end+1) = h;
+    end
+    set(ax, 'XLim', xl, 'YLim', yl);
+    bring_ticks_to_front(ax);
+end
+
+function delete_one_label(src)
+    % Remove a single label and its highlight (its handles are stashed in the
+    % label's UserData).
+    u = get(src, 'UserData');
+    if isstruct(u) && isfield(u, 'hl')
+        h = u.hl;
+        delete(h(isgraphics(h)));
+    end
+    delete(src);
+end
+
+function clear_all_labels(fig)
+    % Remove every identify label and highlight from the main axes.
+    ud = get(fig, 'UserData');
+    if ~isfield(ud, 'axes') || ~isgraphics(ud.axes)
+        return;
+    end
+    ax = ud.axes;
+    delete(findobj(ax, 'Tag', 'SpikeTip'));
+    delete(findobj(ax, 'Tag', 'SpikeHighlight'));
 end
 
 function waveform_reset_x(fig)
@@ -1001,13 +1389,17 @@ function update_from_scrollbars(fig, ud, source)
     if full_dur <= 0, full_dur = 1; end
 
     if strcmp(source, 'Scroll1')
-        % PAN: slider value is in milliseconds relative to epoch_t0
-        val_ms = round(get(s1, 'Value'));
-        ud.view_t0 = ud.epoch_t0 + val_ms / 1000;
-
-        % Clamp to valid pan range
+        % PAN: slider value is a normalized 0..1 fraction of the pannable
+        % range (see update_pan_slider). Convert it back to a start time.
         max_start = ud.epoch_t1 - ud.view_duration;
         if max_start < ud.epoch_t0, max_start = ud.epoch_t0; end
+        range = max_start - ud.epoch_t0;
+
+        frac = get(s1, 'Value');
+        frac = max(0, min(1, frac));
+        ud.view_t0 = ud.epoch_t0 + frac * range;
+
+        % Clamp to valid pan range
         if ud.view_t0 > max_start, ud.view_t0 = max_start; end
         if ud.view_t0 < ud.epoch_t0, ud.view_t0 = ud.epoch_t0; end
     else
@@ -1079,14 +1471,19 @@ function update_scrollbars(fig, ud)
 end
 
 function update_pan_slider(s1, ud)
-    % Configure the pan scrollbar so that:
-    %   - there is one slider unit per millisecond of pannable range, and
-    %   - clicking either the arrow buttons or the trough between the
-    %     thumb and the arrow moves the view by 10% of the current view
-    %     duration.
+    % Configure the pan scrollbar. The slider works in a normalized 0..1
+    % fraction of the pannable range (0 = view at epoch_t0, 1 = view at the
+    % latest start that still fits the epoch). Both the arrow buttons (minor
+    % step) and a click in the trough between the thumb and the arrow (major
+    % step) move the view by 10% of the current view duration.
     %
-    % The slider value is the start time of the view, measured in
-    % milliseconds since ud.epoch_t0.
+    % Working in a normalized fraction (rather than integer milliseconds)
+    % avoids two problems that made the arrows reverse direction at high zoom:
+    %   - snapping view_t0 to a 1 ms grid (round(...*1000)), which made
+    %     sub-millisecond pans round backwards, and
+    %   - a huge integer slider range (millions of ms) with a tiny SliderStep,
+    %     which the underlying Java slider could not resolve and would step the
+    %     wrong way. The range is now always 0..1.
 
     if isempty(s1) || ~isgraphics(s1)
         return;
@@ -1095,28 +1492,26 @@ function update_pan_slider(s1, ud)
     max_start = ud.epoch_t1 - ud.view_duration;
     if max_start < ud.epoch_t0, max_start = ud.epoch_t0; end
 
-    range_ms = round((max_start - ud.epoch_t0) * 1000);
+    range = max_start - ud.epoch_t0;
 
-    if range_ms < 1
+    if range <= 0
         % Nothing to pan (view covers the whole epoch). Park the slider.
         set(s1, 'Min', 0, 'Max', 1, 'Value', 0, ...
                 'SliderStep', [1 1], 'Enable', 'off');
         return;
     end
 
-    val_ms = round((ud.view_t0 - ud.epoch_t0) * 1000);
-    val_ms = max(0, min(range_ms, val_ms));
+    frac = (ud.view_t0 - ud.epoch_t0) / range;
+    frac = max(0, min(1, frac));
 
-    % Both the arrow buttons (minor step) and a click in the trough
-    % between the thumb and the arrow (major step) move the view by 10%
-    % of the current view duration.
-    step_ms = max(1, round(0.1 * ud.view_duration * 1000));
-    step_frac = min(1, step_ms / range_ms);
+    % Arrow / trough step: 10% of the current view duration expressed as a
+    % fraction of the pannable range, clamped to a valid SliderStep in (0, 1].
+    step = (0.1 * ud.view_duration) / range;
+    if step <= 0, step = eps; end
+    step = min(1, step);
 
-    % Set Min/Max before Value to avoid out-of-range errors when the
-    % previous Max was smaller than the new val_ms.
-    set(s1, 'Min', 0, 'Max', range_ms, 'Value', val_ms, ...
-            'SliderStep', [step_frac, step_frac], 'Enable', 'on');
+    set(s1, 'Min', 0, 'Max', 1, 'Value', frac, ...
+            'SliderStep', [step, step], 'Enable', 'on');
 end
 
 function on_zoom_pan(fig, ~)
@@ -1395,6 +1790,9 @@ function on_resize(fig)
         stt = findobj(sf, 'Tag', 'SpikingTitle');
         ssc = findobj(sf, 'Tag', 'SpikingSortCheckbox');
         sbc = findobj(sf, 'Tag', 'SpikingBoxCheckbox');
+        sst = findobj(sf, 'Tag', 'SpikingSelectText');
+        ssm = findobj(sf, 'Tag', 'SpikingSelectMenu');
+        scl = findobj(sf, 'Tag', 'SpikingClearLabels');
         brx = findobj(sf, 'Tag', 'SpikingWaveResetX');
         bzm = findobj(sf, 'Tag', 'SpikingWaveZoom');
 
@@ -1418,8 +1816,15 @@ function on_resize(fig)
         set(ssc, 'Position', [0.65, 0.86, 0.35, 0.05]);
         set(sbc, 'Position', [0.65, 0.80, 0.35, 0.05]);
 
-        % Listbox on Right, below the checkboxes
-        set(slb, 'Position', [0.65, 0, 0.35, 0.79]);
+        % Quick-select label + dropdown under the checkboxes
+        set(sst, 'Position', [0.65, 0.74, 0.12, 0.05]);
+        set(ssm, 'Position', [0.77, 0.74, 0.21, 0.05]);
+
+        % Clear-labels button under the dropdown
+        set(scl, 'Position', [0.65, 0.68, 0.33, 0.05]);
+
+        % Listbox on Right, below the button
+        set(slb, 'Position', [0.65, 0, 0.35, 0.66]);
     end
 
     update_view(fig);
